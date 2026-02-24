@@ -5,6 +5,35 @@ This folder contains the Chainlit app plus scripts to:
 - ingest documents into Qdrant,
 - run the chat UI.
 
+## Quickstart (recommended)
+
+From `apps/chainlit`:
+
+```bash
+cp .env.example .env
+# set LITELLM_BASE_URL + LITELLM_API_KEY (+ CHAT_MODEL/EMBED_MODEL if needed)
+make up
+make logs
+```
+
+Open:
+- `http://localhost:8000`
+
+Useful day-to-day commands:
+
+```bash
+make down         # stop stack
+make reingest     # force recreate + reingest collection
+make ps           # show service status
+```
+
+If you do not want `make`, run directly:
+
+```bash
+docker compose up -d --build
+docker compose logs -f chainlit
+```
+
 ## 1) Prerequisites
 
 - Python 3.12+
