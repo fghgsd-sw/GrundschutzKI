@@ -5,6 +5,7 @@ __pycache__
 .ruff_cache
 .git
 .files
+.env
 .chainlit/chat_history.sqlite3
 .chainlit/chat_history.sqlite3-shm
 .chainlit/chat_history.sqlite3-wal
