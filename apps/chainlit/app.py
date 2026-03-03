@@ -769,6 +769,7 @@ def _coerce_step_text(value: Any) -> str:
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 def _coerce_step_metadata(step: dict[str, Any]) -> dict[str, Any]:
     raw = step.get("metadata")
     if isinstance(raw, dict):
@@ -782,6 +783,8 @@ def _coerce_step_metadata(step: dict[str, Any]) -> dict[str, Any]:
             return {}
     return {}
 =======
+=======
+>>>>>>> e915692 (feat(auth): add GitHub OAuth + PostgreSQL user persistence)
 def _hash_password(password: str) -> str:
     """Hash a password using bcrypt."""
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -790,6 +793,9 @@ def _hash_password(password: str) -> str:
 def _verify_password(password: str, password_hash: str) -> bool:
     """Verify a password against a bcrypt hash."""
     return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+<<<<<<< HEAD
+>>>>>>> e915692 (feat(auth): add GitHub OAuth + PostgreSQL user persistence)
+=======
 >>>>>>> e915692 (feat(auth): add GitHub OAuth + PostgreSQL user persistence)
 
 
