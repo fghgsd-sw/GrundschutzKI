@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import bcrypt
 import chainlit as cl
 from chainlit.auth import get_current_user
 from chainlit.types import Starter
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from chat_history import (
     add_chat_message,
@@ -25,7 +27,13 @@ from chat_history import (
     set_session_title_if_missing,
 )
 from llm import chat, message_to_dict
-from native_chat import ensure_native_schema, export_all_chats_zip
+from native_chat import (
+    check_user_exists,
+    create_user,
+    ensure_native_schema,
+    export_all_chats_zip,
+    get_user_by_identifier,
+)
 from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve
 from settings import (
     CHAT_DB_PATH,
@@ -696,14 +704,56 @@ def _coerce_step_text(value: Any) -> str:
     return str(value)
 
 
+def _hash_password(password: str) -> str:
+    """Hash a password using bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    """Verify a password against a bcrypt hash."""
+    return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+
+
 @cl.password_auth_callback
 async def auth_callback(username: str, password: str) -> cl.User | None:
+    # Try database authentication first (if DATABASE_URL is configured)
+    if DATABASE_URL:
+        user = await get_user_by_identifier(DATABASE_URL, username)
+        if user and user.get("password_hash"):
+            if _verify_password(password, user["password_hash"]):
+                metadata = json.loads(user.get("metadata") or "{}")
+                metadata["provider"] = "local"
+                return cl.User(identifier=user["identifier"], metadata=metadata)
+            return None  # Wrong password for existing user
+
+    # Fallback to environment variable authentication (for backwards compatibility / admin)
     expected_user = CHAINLIT_AUTH_USERNAME or "admin"
     expected_password = CHAINLIT_AUTH_PASSWORD
-    if not expected_password:
-        return None
-    if username == expected_user and password == expected_password:
-        return cl.User(identifier=expected_user, metadata={"provider": "password"})
+    if expected_password and username == expected_user and password == expected_password:
+        return cl.User(identifier=expected_user, metadata={"provider": "password", "role": "admin"})
+
+    return None
+
+
+@cl.oauth_callback
+async def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: dict[str, str],
+    default_user: cl.User,
+) -> cl.User | None:
+    """Handle OAuth login from GitHub."""
+    if provider_id == "github":
+        return cl.User(
+            identifier=raw_user_data.get("login"),  # GitHub username
+            metadata={
+                "provider": "github",
+                "name": raw_user_data.get("name"),
+                "email": raw_user_data.get("email"),
+                "avatar_url": raw_user_data.get("avatar_url"),
+                "github_id": str(raw_user_data.get("id")),
+            },
+        )
     return None
 
 
@@ -751,8 +801,40 @@ async def on_app_startup() -> None:
         )
         return FileResponse(path=str(bundle), media_type="application/zip", filename=bundle.name)
 
+    # Registration endpoint for self-registration
+    class RegisterRequest(BaseModel):
+        username: str
+        email: str
+        password: str
+
+    @chainlit_fastapi_app.post("/auth/register")
+    async def register_user(request: RegisterRequest):
+        # Validate input
+        if not request.username or len(request.username) < 3:
+            raise HTTPException(status_code=400, detail="Benutzername muss mindestens 3 Zeichen haben")
+        if not request.email or "@" not in request.email:
+            raise HTTPException(status_code=400, detail="Ungültige E-Mail-Adresse")
+        if not request.password or len(request.password) < 8:
+            raise HTTPException(status_code=400, detail="Passwort muss mindestens 8 Zeichen haben")
+
+        # Check if user/email already exists
+        exists = await check_user_exists(DATABASE_URL, request.username, request.email)
+        if exists["username_exists"]:
+            raise HTTPException(status_code=409, detail="Benutzername bereits vergeben")
+        if exists["email_exists"]:
+            raise HTTPException(status_code=409, detail="E-Mail-Adresse bereits registriert")
+
+        # Create user with hashed password
+        password_hash = _hash_password(request.password)
+        user = await create_user(DATABASE_URL, request.username, request.email, password_hash)
+        if user is None:
+            raise HTTPException(status_code=500, detail="Registrierung fehlgeschlagen")
+
+        return {"message": "Registrierung erfolgreich", "username": user["identifier"]}
+
     chainlit_fastapi_app.state.native_export_route_added = True
     print("[STARTUP] native export route registered at /export/all-chats")
+    print("[STARTUP] registration route registered at /auth/register")
 
 
 @cl.on_chat_resume

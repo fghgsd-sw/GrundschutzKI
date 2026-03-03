@@ -20,10 +20,23 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE TABLE IF NOT EXISTS "User" (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   identifier TEXT UNIQUE NOT NULL,
+  email TEXT UNIQUE,
+  password_hash TEXT,
   metadata TEXT NOT NULL DEFAULT '{}',
   "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Add columns for existing tables (idempotent migrations)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'User' AND column_name = 'email') THEN
+    ALTER TABLE "User" ADD COLUMN email TEXT UNIQUE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'User' AND column_name = 'password_hash') THEN
+    ALTER TABLE "User" ADD COLUMN password_hash TEXT;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS "Thread" (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -92,6 +105,99 @@ async def ensure_native_schema(database_url: str) -> None:
     conn = await asyncpg.connect(database_url)
     try:
         await conn.execute(SCHEMA_SQL)
+    finally:
+        await conn.close()
+
+
+async def create_user(
+    database_url: str,
+    username: str,
+    email: str,
+    password_hash: str,
+) -> dict[str, Any] | None:
+    """Create a new user with hashed password. Returns user dict or None if exists."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO "User" (identifier, email, password_hash, metadata)
+            VALUES ($1, $2, $3, '{"provider": "local"}')
+            ON CONFLICT (identifier) DO NOTHING
+            RETURNING id, identifier, email, metadata, "createdAt"
+            """,
+            username,
+            email,
+            password_hash,
+        )
+        if row is None:
+            return None
+        return dict(row)
+    finally:
+        await conn.close()
+
+
+async def get_user_by_identifier(
+    database_url: str,
+    identifier: str,
+) -> dict[str, Any] | None:
+    """Get user by username/identifier."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        row = await conn.fetchrow(
+            """
+            SELECT id, identifier, email, password_hash, metadata, "createdAt"
+            FROM "User"
+            WHERE identifier = $1
+            """,
+            identifier,
+        )
+        return dict(row) if row else None
+    finally:
+        await conn.close()
+
+
+async def get_user_by_email(
+    database_url: str,
+    email: str,
+) -> dict[str, Any] | None:
+    """Get user by email."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        row = await conn.fetchrow(
+            """
+            SELECT id, identifier, email, password_hash, metadata, "createdAt"
+            FROM "User"
+            WHERE email = $1
+            """,
+            email,
+        )
+        return dict(row) if row else None
+    finally:
+        await conn.close()
+
+
+async def check_user_exists(
+    database_url: str,
+    username: str | None = None,
+    email: str | None = None,
+) -> dict[str, bool]:
+    """Check if username or email already exists."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        result = {"username_exists": False, "email_exists": False}
+        if username:
+            row = await conn.fetchrow(
+                'SELECT 1 FROM "User" WHERE identifier = $1',
+                username,
+            )
+            result["username_exists"] = row is not None
+        if email:
+            row = await conn.fetchrow(
+                'SELECT 1 FROM "User" WHERE email = $1',
+                email,
+            )
+            result["email_exists"] = row is not None
+        return result
     finally:
         await conn.close()
 
