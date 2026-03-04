@@ -68,15 +68,30 @@ Themen:"""
 
 BALANCE_DETERMINATION_PROMPT = """Du bist ein System, das entscheidet, wie stark die Personalisierung bei einer RAG-Anfrage gewichtet werden soll.
 
+Benutzerrolle: {user_role}
 Benutzer-Interessen: {user_topics}
 Aktuelle Anfrage: {query}
 
-Entscheide, wie stark die Personalisierung gewichtet werden soll:
-- balance = 1.0: Keine Personalisierung, nur Standard-Retrieval (für allgemeine Fragen oder wenn die Anfrage NICHT zu den Interessen passt)
-- balance = 0.5: Ausgewogene Mischung (für Fragen, die teilweise mit den Interessen zusammenhängen)
-- balance = 0.0: Starke Personalisierung (für Fragen, die direkt die Interessen des Benutzers betreffen)
+Entscheide, wie stark die Personalisierung gewichtet werden soll (Fließkommawert zwischen 0.0 und 1.0):
 
-Antworte NUR mit einer Zahl zwischen 0.0 und 1.0, ohne weitere Erklärungen."""
+- 1.0: Keine Personalisierung - Standard-Retrieval
+  (für allgemeine Fragen oder wenn die Anfrage NICHT zu den Interessen/der Rolle passt)
+  
+- 0.7-0.9: Geringe Personalisierung
+  (für Fragen mit schwachem Bezug zu den Interessen)
+  
+- 0.4-0.6: Ausgewogene Mischung
+  (für Fragen, die teilweise mit den Interessen oder der Rolle zusammenhängen)
+  
+- 0.1-0.3: Starke Personalisierung
+  (für Fragen mit deutlichem Bezug zu den Benutzer-Interessen)
+  
+- 0.0: Maximale Personalisierung
+  (für Fragen, die exakt die Interessen und Rolle des Benutzers betreffen)
+
+Berücksichtige auch die Rolle des Benutzers: Eine technische Anfrage sollte für "Durchführungsverantwortliche IT-Betrieb" stärker personalisiert werden als für "Institutsleitung".
+
+Antworte NUR mit einer Dezimalzahl zwischen 0.0 und 1.0, ohne weitere Erklärungen."""
 
 
 async def extract_user_topics(
@@ -238,15 +253,17 @@ async def load_user_profile(
 async def determine_balance(
     query: str,
     user_profile: UserProfile | None,
+    user_role: str = "",
 ) -> float:
     """Dynamically determine personalization balance for a query.
 
     Uses LLM to decide how strongly to weight personalization based on
-    whether the query relates to user's known interests.
+    whether the query relates to user's known interests and role.
 
     Args:
         query: The user's current query
         user_profile: User's profile with extracted topics
+        user_role: The user's selected chat profile/role
 
     Returns:
         Balance value between 0.0 (full personalization) and 1.0 (no personalization)
@@ -260,6 +277,7 @@ async def determine_balance(
         return 1.0
 
     prompt = BALANCE_DETERMINATION_PROMPT.format(
+        user_role=user_role or "Nicht angegeben",
         user_topics=", ".join(user_profile.topics),
         query=query,
     )

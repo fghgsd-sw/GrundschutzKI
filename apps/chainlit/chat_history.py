@@ -51,6 +51,7 @@ def init_chat_db(db_path: Path) -> None:
                 topics_json TEXT NOT NULL DEFAULT '[]',
                 topic_embeddings_json TEXT NOT NULL DEFAULT '[]',
                 excluded_bausteine_json TEXT NOT NULL DEFAULT '[]',
+                selected_chat_profile TEXT,
                 message_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -60,6 +61,13 @@ def init_chat_db(db_path: Path) -> None:
             ON chat_sessions(user_id);
             """
         )
+        # Migration: add selected_chat_profile column if it doesn't exist
+        cursor = conn.execute("PRAGMA table_info(user_profiles)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "selected_chat_profile" not in columns:
+            conn.execute(
+                "ALTER TABLE user_profiles ADD COLUMN selected_chat_profile TEXT"
+            )
         conn.commit()
 
 
@@ -341,6 +349,7 @@ def upsert_user_profile(
     topics: list[str] | None = None,
     topic_embeddings: list[list[float]] | None = None,
     excluded_bausteine: list[str] | None = None,
+    selected_chat_profile: str | None = None,
     message_count: int | None = None,
 ) -> None:
     """Create or update user profile with extracted topics and embeddings."""
@@ -362,6 +371,9 @@ def upsert_user_profile(
             if excluded_bausteine is not None:
                 updates.append("excluded_bausteine_json = ?")
                 params.append(json.dumps(excluded_bausteine, ensure_ascii=False))
+            if selected_chat_profile is not None:
+                updates.append("selected_chat_profile = ?")
+                params.append(selected_chat_profile)
             if message_count is not None:
                 updates.append("message_count = ?")
                 params.append(message_count)
@@ -374,14 +386,15 @@ def upsert_user_profile(
             conn.execute(
                 """
                 INSERT INTO user_profiles (user_id, topics_json, topic_embeddings_json,
-                    excluded_bausteine_json, message_count, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    excluded_bausteine_json, selected_chat_profile, message_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
                     json.dumps(topics or [], ensure_ascii=False),
                     json.dumps(topic_embeddings or [], ensure_ascii=False),
                     json.dumps(excluded_bausteine or [], ensure_ascii=False),
+                    selected_chat_profile,
                     message_count or 0,
                     now,
                     now,
@@ -438,6 +451,35 @@ def get_user_message_count(db_path: Path, user_id: str) -> int:
             (user_id,),
         ).fetchone()
     return row["cnt"] if row else 0
+
+
+def get_user_selected_chat_profile(db_path: Path, user_id: str) -> str | None:
+    """Get the user's persisted chat profile selection."""
+    try:
+        with _connect(db_path) as conn:
+            # Run migration if needed
+            cursor = conn.execute("PRAGMA table_info(user_profiles)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "selected_chat_profile" not in columns:
+                conn.execute(
+                    "ALTER TABLE user_profiles ADD COLUMN selected_chat_profile TEXT"
+                )
+                conn.commit()
+            
+            row = conn.execute(
+                "SELECT selected_chat_profile FROM user_profiles WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return row["selected_chat_profile"] if row else None
+    except Exception:
+        return None
+
+
+def set_user_selected_chat_profile(
+    db_path: Path, user_id: str, profile_name: str | None
+) -> None:
+    """Set the user's chat profile selection persistently."""
+    upsert_user_profile(db_path, user_id, selected_chat_profile=profile_name)
 
 
 def delete_user_profile(db_path: Path, user_id: str) -> bool:

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import chainlit as cl
 from chainlit.auth import get_current_user
+from chainlit.input_widget import Select
 from chainlit.types import Starter
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -21,9 +22,11 @@ from chat_history import (
     export_session_openai_json,
     get_session_messages,
     get_user_message_count,
+    get_user_selected_chat_profile,
     init_chat_db,
     list_chat_sessions,
     set_session_title_if_missing,
+    set_user_selected_chat_profile,
 )
 from llm import chat, message_to_dict
 from native_chat import ensure_native_schema, export_all_chats_zip
@@ -62,6 +65,31 @@ def _load_system_prompt(path: Path) -> str | None:
 
 
 SYSTEM_PROMPT = _load_system_prompt(SYSTEM_PROMPT_PATH)
+
+# Chat profiles configuration
+CHAT_PROFILES_PATH = Path(__file__).parent / "chat_profiles.json"
+
+
+def _load_chat_profiles() -> dict[str, Any]:
+    """Load chat profiles configuration from JSON file."""
+    if CHAT_PROFILES_PATH.is_file():
+        try:
+            return json.loads(CHAT_PROFILES_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[WARN] Failed to load chat_profiles.json: {e}")
+    return {"profiles": [], "default_profile": None}
+
+
+CHAT_PROFILES_CONFIG = _load_chat_profiles()
+
+
+def _get_profile_by_name(profile_name: str) -> dict[str, Any] | None:
+    """Get a profile configuration by its name."""
+    for profile in CHAT_PROFILES_CONFIG.get("profiles", []):
+        if profile.get("name") == profile_name:
+            return profile
+    return None
+
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -728,6 +756,22 @@ def _coerce_step_text(value: Any) -> str:
     return str(value)
 
 
+@cl.oauth_callback
+async def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: dict[str, Any],
+    default_user: cl.User,
+) -> cl.User | None:
+    """Handle OAuth login (e.g., GitHub).
+
+    Returns the authenticated user or None to reject the login.
+    """
+    # Accept all users from configured OAuth providers
+    # Customize this to filter users by organization, email domain, etc.
+    return default_user
+
+
 @cl.password_auth_callback
 async def auth_callback(username: str, password: str) -> cl.User | None:
     expected_user = CHAINLIT_AUTH_USERNAME or "admin"
@@ -812,19 +856,132 @@ async def on_chat_resume(thread: dict[str, Any]):
     cl.user_session.set("messages", messages)
 
 
+@cl.set_chat_profiles
+async def set_chat_profiles():
+    """Chat profiles are now managed via settings for persistence.
+    
+    We return an empty list to disable the startup profile selector.
+    The profile can be changed in the chat settings (sidebar).
+    """
+    return []
+
+
+def _build_chat_settings(current_profile: str | None = None):
+    """Build ChatSettings with profile selector."""
+    profiles = CHAT_PROFILES_CONFIG.get("profiles", [])
+    profile_names = [p.get("name", "") for p in profiles if p.get("name")]
+    
+    if not profile_names:
+        return None
+    
+    # Find current profile index
+    initial_index = 0
+    if current_profile and current_profile in profile_names:
+        initial_index = profile_names.index(current_profile)
+    
+    return cl.ChatSettings(
+        [
+            Select(
+                id="chat_profile",
+                label="Ihre Rolle",
+                description="Wählen Sie Ihre Rolle für angepasste Antworten",
+                values=profile_names,
+                initial_index=initial_index,
+            ),
+        ]
+    )
+
+
+@cl.on_settings_update
+async def on_settings_update(settings: dict[str, Any]):
+    """Handle profile changes in settings."""
+    new_profile_name = settings.get("chat_profile")
+    if not new_profile_name:
+        return
+    
+    # Get user ID
+    user_id = cl.user_session.get("current_user_id")
+    
+    # Persist the selection
+    if user_id:
+        set_user_selected_chat_profile(CHAT_DB_PATH, user_id, new_profile_name)
+        print(f"[DEBUG] on_settings_update: persisted chat_profile={new_profile_name} for user={user_id}")
+    
+    # Update session
+    chat_profile_config = _get_profile_by_name(new_profile_name)
+    cl.user_session.set("chat_profile", new_profile_name)
+    cl.user_session.set("chat_profile_config", chat_profile_config)
+    
+    # Rebuild system prompt with new profile
+    system_prompt = SYSTEM_PROMPT
+    
+    if system_prompt and chat_profile_config:
+        profile_prompt = chat_profile_config.get("prompt_context", "")
+        if profile_prompt:
+            system_prompt = f"{system_prompt}\n\n## ROLLENKONTEXT\n{profile_prompt}"
+    
+    # Add personalization context if available
+    user_profile = cl.user_session.get("user_profile")
+    if system_prompt and user_profile and user_profile.topics:
+        personalization_context = _build_personalization_prompt(user_profile)
+        system_prompt = f"{system_prompt}\n\n{personalization_context}"
+    
+    # Update messages with new system prompt
+    messages = cl.user_session.get("messages") or []
+    if messages and messages[0].get("role") == "system":
+        messages[0]["content"] = system_prompt
+    elif system_prompt:
+        messages.insert(0, {"role": "system", "content": system_prompt})
+    cl.user_session.set("messages", messages)
+    
+    # Show confirmation
+    await cl.Message(
+        content=f"Ihre Rolle wurde geändert zu: **{new_profile_name}**. Zukünftige Antworten werden entsprechend angepasst.",
+        author="System",
+    ).send()
+
+
 @cl.on_chat_start
 async def on_chat_start():
     session_id = str(uuid4())
 
     # Get authenticated user ID if available
+    # Chainlit stores user in session after auth callback
     user = cl.user_session.get("user")
-    user_id = getattr(user, "identifier", None) if user else None
+    user_id = None
+    if user:
+        # Try different attribute names Chainlit might use
+        user_id = getattr(user, "identifier", None) or getattr(user, "id", None)
+
+    # Load persisted chat profile for authenticated users (persistent across sessions)
+    chat_profile_name = None
+    if user_id:
+        chat_profile_name = get_user_selected_chat_profile(CHAT_DB_PATH, user_id)
+    
+    # Fall back to default profile if none persisted
+    if not chat_profile_name:
+        chat_profile_name = CHAT_PROFILES_CONFIG.get("default_profile")
+        # Find the profile name for the default_profile id
+        if chat_profile_name:
+            for p in CHAT_PROFILES_CONFIG.get("profiles", []):
+                if p.get("id") == chat_profile_name:
+                    chat_profile_name = p.get("name")
+                    break
+    
+    chat_profile_config = _get_profile_by_name(chat_profile_name) if chat_profile_name else None
+    cl.user_session.set("chat_profile", chat_profile_name)
+    cl.user_session.set("chat_profile_config", chat_profile_config)
+
+    print(f"[DEBUG] on_chat_start: user={user}, user_id={user_id}, chat_profile={chat_profile_name}")
 
     create_chat_session(
         CHAT_DB_PATH,
         session_id,
         user_id=user_id,
-        metadata={"system_prompt_loaded": bool(SYSTEM_PROMPT)},
+        metadata={
+            "system_prompt_loaded": bool(SYSTEM_PROMPT),
+            "chat_profile": chat_profile_name,
+        },
     )
     cl.user_session.set("chat_history_session_id", session_id)
     cl.user_session.set("current_user_id", user_id)
@@ -843,8 +1000,16 @@ async def on_chat_start():
                 user_profile = await update_user_profile(user_id)
     cl.user_session.set("user_profile", user_profile)
 
-    # Build system prompt with personalization context if available
+    # Build system prompt with chat profile context and personalization
     system_prompt = SYSTEM_PROMPT
+
+    # Add chat profile context if selected
+    if system_prompt and chat_profile_config:
+        profile_prompt = chat_profile_config.get("prompt_context", "")
+        if profile_prompt:
+            system_prompt = f"{system_prompt}\n\n## ROLLENKONTEXT\n{profile_prompt}"
+
+    # Add personalization context if available
     if system_prompt and user_profile and user_profile.topics:
         personalization_context = _build_personalization_prompt(user_profile)
         system_prompt = f"{system_prompt}\n\n{personalization_context}"
@@ -854,6 +1019,11 @@ async def on_chat_start():
         messages.append({"role": "system", "content": system_prompt})
         add_chat_message(CHAT_DB_PATH, session_id, "system", system_prompt)
     cl.user_session.set("messages", messages)
+
+    # Send chat settings with profile selector
+    chat_settings = _build_chat_settings(chat_profile_name)
+    if chat_settings:
+        await chat_settings.send()
 
 
 @cl.set_starters
@@ -1014,11 +1184,12 @@ async def main(message: cl.Message):
                     with cl.Step(name="rag_retrieve", type="tool") as step:
                         # Get user profile for personalized retrieval
                         user_profile = cl.user_session.get("user_profile")
+                        chat_profile_name = cl.user_session.get("chat_profile") or ""
                         balance = 1.0  # Default: no personalization
 
                         if PERSONALIZATION_ENABLED and user_profile:
                             # Dynamically determine balance based on query relevance to user interests
-                            balance = await determine_balance(query, user_profile)
+                            balance = await determine_balance(query, user_profile, user_role=chat_profile_name)
                             step.input = {"query": query, "top_k": top_k, "personalized": True, "balance": balance}
                         else:
                             step.input = {"query": query, "top_k": top_k}
