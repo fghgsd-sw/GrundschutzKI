@@ -20,13 +20,14 @@ from chat_history import (
     export_all_sessions_openai_jsonl,
     export_session_openai_json,
     get_session_messages,
+    get_user_message_count,
     init_chat_db,
     list_chat_sessions,
     set_session_title_if_missing,
 )
 from llm import chat, message_to_dict
 from native_chat import ensure_native_schema, export_all_chats_zip
-from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve
+from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve, personalized_retrieve
 from settings import (
     CHAT_DB_PATH,
     CHAT_EXPORT_DIR,
@@ -38,9 +39,18 @@ from settings import (
     EMBED_MODEL,
     MAX_TOP_K,
     MAX_SOURCE_LINKS,
+    PERSONALIZATION_ENABLED,
+    PERSONALIZED_FOLLOWUPS_COUNT,
+    PROFILE_MIN_MESSAGES,
     STARTER_QUESTIONS,
     SYSTEM_PROMPT_PATH,
     TOP_K,
+)
+from user_profile import (
+    determine_balance,
+    load_user_profile,
+    update_user_profile,
+    UserProfile,
 )
 
 
@@ -81,6 +91,28 @@ def _truncate(text: str, max_len: int = 120) -> str:
     if len(cleaned) <= max_len:
         return cleaned
     return cleaned[: max_len - 3].rstrip() + "..."
+
+
+def _build_personalization_prompt(user_profile: UserProfile) -> str:
+    """Build personalization context for the system prompt."""
+    if not user_profile or not user_profile.topics:
+        return ""
+
+    topics_str = ", ".join(user_profile.topics)
+    personalized_followups = PERSONALIZED_FOLLOWUPS_COUNT
+
+    return f"""## PERSONALISIERTER KONTEXT
+Der Nutzer hat sich häufig mit folgenden Themen beschäftigt: {topics_str}
+
+## PERSONALISIERTE ANTWORT-SEKTION
+- Füge nach der Hauptantwort eine kurze Sektion hinzu mit dem Header: "**Bezug zu Ihren Interessen:**"
+- Beziehe die Antwort kurz auf die bekannten Interessen des Nutzers (max 50 Wörter)
+- Diese Sektion soll nur erscheinen, wenn ein sinnvoller Bezug herstellbar ist
+
+## PERSONALISIERTE ANSCHLUSSFRAGEN
+- {personalized_followups} der 3 Anschlussfragen sollten sich auf die Nutzerinteressen beziehen
+- Beispiel: Wenn der Nutzer sich für Webserver interessiert, könnte eine Anschlussfrage lauten: "Welche speziellen Anforderungen gelten für Webserver in diesem Kontext?"
+"""
 
 
 def _current_chat_session_id() -> str | None:
@@ -783,16 +815,44 @@ async def on_chat_resume(thread: dict[str, Any]):
 @cl.on_chat_start
 async def on_chat_start():
     session_id = str(uuid4())
+
+    # Get authenticated user ID if available
+    user = cl.user_session.get("user")
+    user_id = getattr(user, "identifier", None) if user else None
+
     create_chat_session(
         CHAT_DB_PATH,
         session_id,
+        user_id=user_id,
         metadata={"system_prompt_loaded": bool(SYSTEM_PROMPT)},
     )
     cl.user_session.set("chat_history_session_id", session_id)
+    cl.user_session.set("current_user_id", user_id)
+
+    # Load or initialize user profile for personalization
+    user_profile: UserProfile | None = None
+    if PERSONALIZATION_ENABLED and user_id:
+        user_profile = await load_user_profile(user_id)
+        if user_profile and user_profile.has_sufficient_history():
+            print(f"[DEBUG] on_chat_start: loaded profile for {user_id}, topics={user_profile.topics}")
+        else:
+            # Check if user has enough messages to generate profile
+            msg_count = get_user_message_count(CHAT_DB_PATH, user_id)
+            if msg_count >= PROFILE_MIN_MESSAGES:
+                print(f"[DEBUG] on_chat_start: generating profile for {user_id}, msg_count={msg_count}")
+                user_profile = await update_user_profile(user_id)
+    cl.user_session.set("user_profile", user_profile)
+
+    # Build system prompt with personalization context if available
+    system_prompt = SYSTEM_PROMPT
+    if system_prompt and user_profile and user_profile.topics:
+        personalization_context = _build_personalization_prompt(user_profile)
+        system_prompt = f"{system_prompt}\n\n{personalization_context}"
+
     messages: list[dict[str, Any]] = []
-    if SYSTEM_PROMPT:
-        messages.append({"role": "system", "content": SYSTEM_PROMPT})
-        add_chat_message(CHAT_DB_PATH, session_id, "system", SYSTEM_PROMPT)
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+        add_chat_message(CHAT_DB_PATH, session_id, "system", system_prompt)
     cl.user_session.set("messages", messages)
 
 
@@ -952,16 +1012,34 @@ async def main(message: cl.Message):
                         step.output = {"hits": len(results), "cached": True}
                 else:
                     with cl.Step(name="rag_retrieve", type="tool") as step:
-                        step.input = {"query": query, "top_k": top_k}
-                        results = await retrieve(query=query, top_k=top_k)
+                        # Get user profile for personalized retrieval
+                        user_profile = cl.user_session.get("user_profile")
+                        balance = 1.0  # Default: no personalization
+
+                        if PERSONALIZATION_ENABLED and user_profile:
+                            # Dynamically determine balance based on query relevance to user interests
+                            balance = await determine_balance(query, user_profile)
+                            step.input = {"query": query, "top_k": top_k, "personalized": True, "balance": balance}
+                        else:
+                            step.input = {"query": query, "top_k": top_k}
+
+                        # Use personalized retrieval if profile available
+                        results = await personalized_retrieve(
+                            query=query,
+                            user_profile=user_profile,
+                            balance=balance,
+                            top_k=top_k,
+                        )
                         print(
                             "[DEBUG] rag_retrieve",
                             "hits=",
                             len(results),
                             "first_text_len=",
                             len(results[0].text) if results else 0,
+                            "personalized=",
+                            balance < 1.0,
                         )
-                        step.output = {"hits": len(results)}
+                        step.output = {"hits": len(results), "balance": balance}
 
                     context = build_context(results)
                     citations_text = format_citations(results)
@@ -1180,3 +1258,20 @@ async def main(message: cl.Message):
         )
 
     cl.user_session.set("messages", messages)
+
+    # Trigger background profile update if enough messages accumulated
+    if PERSONALIZATION_ENABLED:
+        user_id = cl.user_session.get("current_user_id")
+        if user_id:
+            try:
+                current_profile = cl.user_session.get("user_profile")
+                current_count = get_user_message_count(CHAT_DB_PATH, user_id)
+                profile_count = current_profile.message_count if current_profile else 0
+
+                # Update profile if 10+ new messages since last update
+                if current_count >= PROFILE_MIN_MESSAGES and current_count - profile_count >= 10:
+                    print(f"[DEBUG] triggering profile update for {user_id}, new_messages={current_count - profile_count}")
+                    updated_profile = await update_user_profile(user_id)
+                    cl.user_session.set("user_profile", updated_profile)
+            except Exception as e:
+                print(f"[WARN] profile_update_failed: {e}")
