@@ -6,10 +6,16 @@ ENV PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-COPY . /app
+# 1. Nur Abhängigkeitsdateien kopieren (maximaler Cache-Effekt)
+COPY pyproject.toml ./
+# Falls du requirements.txt verwendest, auch:
+# COPY requirements.txt ./
 
-RUN pip install --upgrade pip \
-    && pip install -e .
+# 2. Abhängigkeiten installieren (wird nur neu ausgeführt, wenn sich pyproject.toml ändert)
+RUN pip install --upgrade pip && pip install .
+
+# 3. Restlichen Code kopieren (schnell, wenn sich nur Code ändert)
+COPY . .
 
 EXPOSE 8000
 
