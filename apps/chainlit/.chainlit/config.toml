@@ -22,7 +22,8 @@ persist_user_env = false
 # Set to true to show API keys as ***, false to show them as plain text
 mask_user_env = false
 
-# Authorized origins
+# Authorized origins – restrict to trusted domains in production
+# (e.g. allow_origins = ["https://your-app.example.com"])
 allow_origins = ["*"]
 
 [features]
@@ -66,9 +67,9 @@ reaction_on_message_received = false
     # 3. For specific file extensions:
     #    accept = { "application/octet-stream" = [".xyz", ".pdb"] }
     # Note: Using "*/*" is not recommended as it may cause browser warnings
-    accept = ["*/*"]
+    accept = ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain", "text/markdown", "text/csv"]
     max_files = 20
-    max_size_mb = 500
+    max_size_mb = 50
 
 [features.audio]
     # Enable audio features

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import json
 from qdrant_client import QdrantClient
@@ -12,12 +12,17 @@ from llm import embed
 from settings import (
     CITATION_MAP_PATH,
     GRUNDSCHUTZ_SOURCE_PDF,
+    PERSONALIZATION_ENABLED,
+    PROFILE_RELEVANCE_THRESHOLD,
     QDRANT_API_KEY,
     QDRANT_COLLECTION,
     QDRANT_URL,
     SCORE_THRESHOLD,
     TOP_K,
 )
+
+if TYPE_CHECKING:
+    from user_profile import UserProfile
 
 
 @dataclass
@@ -29,6 +34,30 @@ class RagResult:
 
 _client: QdrantClient | None = None
 _citation_map: dict[str, dict[str, str]] | None = None
+
+
+def _canonical_pdf_from_text(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    lower = raw.lower()
+
+    if lower.endswith(".pdf"):
+        return raw.split("/")[-1]
+
+    if "standard_200_1" in lower or "standard 200 1" in lower:
+        return "standard_200_1.pdf"
+    if "standard_200_2" in lower or "standard 200 2" in lower:
+        return "standard_200_2.pdf"
+    if "standard_200_3" in lower or "standard 200 3" in lower:
+        return "standard_200_3.pdf"
+    if "standard_200_4" in lower or "standard 200 4" in lower:
+        return "standard_200_4.pdf"
+
+    if "kompendium" in lower or "grundschutz" in lower:
+        return GRUNDSCHUTZ_SOURCE_PDF
+
+    return None
 
 
 def _get_client() -> QdrantClient:
@@ -78,19 +107,32 @@ def _extract_citation(payload: dict[str, Any]) -> str:
 
 def extract_source_file(payload: dict[str, Any]) -> str | None:
     value = payload.get("file")
-    if isinstance(value, str) and value.lower().endswith(".pdf"):
-        return value
+    if isinstance(value, str):
+        resolved = _canonical_pdf_from_text(value)
+        if resolved:
+            return resolved
 
     source = payload.get("source")
     if isinstance(source, dict):
         value = source.get("file")
-        if isinstance(value, str) and value.lower().endswith(".pdf"):
-            return value
+        if isinstance(value, str):
+            resolved = _canonical_pdf_from_text(value)
+            if resolved:
+                return resolved
 
-    for key in ("source", "document"):
+        for key in ("document", "title", "source"):
+            nested = source.get(key)
+            if isinstance(nested, str):
+                resolved = _canonical_pdf_from_text(nested)
+                if resolved:
+                    return resolved
+
+    for key in ("source", "document", "title"):
         value = payload.get(key)
-        if isinstance(value, str) and value.lower().endswith(".pdf"):
-            return value
+        if isinstance(value, str):
+            resolved = _canonical_pdf_from_text(value)
+            if resolved:
+                return resolved
 
     # Fallback for Grundschutz chunks ingested from structured JSON without explicit PDF file.
     source = payload.get("source")
@@ -134,7 +176,20 @@ async def retrieve(
     *,
     source_scope: str | None = None,
     standard_id: str | None = None,
+    include_vectors: bool = False,
 ) -> list[RagResult]:
+    """Retrieve documents matching the query.
+
+    Args:
+        query: Search query text
+        top_k: Number of results to return
+        source_scope: Optional filter by source scope
+        standard_id: Optional filter by standard ID
+        include_vectors: If True, include embedding vectors in results (for personalization)
+
+    Returns:
+        List of RagResult objects
+    """
     client = _get_client()
     vector = (await embed([query]))[0]
     k = top_k or TOP_K
@@ -151,6 +206,7 @@ async def retrieve(
         limit=k,
         score_threshold=SCORE_THRESHOLD,
         with_payload=True,
+        with_vectors=include_vectors,
         query_filter=query_filter,
     )
     points = list(response.points or [])
@@ -163,6 +219,7 @@ async def retrieve(
             limit=k,
             score_threshold=SCORE_THRESHOLD,
             with_payload=True,
+            with_vectors=include_vectors,
         )
         points = list(response.points or [])
 
@@ -172,6 +229,10 @@ async def retrieve(
         text = _extract_text(payload)
         if not text:
             continue
+        # Store embedding vector if requested (for personalization scoring)
+        if include_vectors and hit.vector is not None:
+            if isinstance(hit.vector, list):
+                payload["_embedding"] = hit.vector
         hits.append(
             RagResult(
                 text=_clean_text(text),
@@ -180,6 +241,110 @@ async def retrieve(
             )
         )
     return hits
+
+
+async def personalized_retrieve(
+    query: str,
+    user_profile: "UserProfile | None",
+    balance: float = 0.5,
+    top_k: int | None = None,
+    *,
+    source_scope: str | None = None,
+    standard_id: str | None = None,
+) -> list[RagResult]:
+    """Retrieve documents with personalization based on user profile.
+
+    Implements dual retrieval:
+    1. Standard retrieval (current implementation)
+    2. User-profile-filtered retrieval (removes irrelevant chunks)
+
+    The balance parameter controls the weighting:
+    - balance = 1.0: Only standard retrieval
+    - balance = 0.0: Only profile-filtered retrieval
+    - balance = 0.5: Blend both mechanisms
+
+    Args:
+        query: Search query text
+        user_profile: User profile with topics and embeddings
+        balance: Weighting between standard (1.0) and personalized (0.0) retrieval
+        top_k: Number of results to return
+        source_scope: Optional filter by source scope
+        standard_id: Optional filter by standard ID
+
+    Returns:
+        List of RagResult objects with personalized scoring
+    """
+    from user_profile import compute_profile_relevance
+
+    # If personalization disabled or no profile, fall back to standard retrieval
+    if not PERSONALIZATION_ENABLED or user_profile is None or balance >= 1.0:
+        return await retrieve(
+            query, top_k, source_scope=source_scope, standard_id=standard_id
+        )
+
+    # If no topic embeddings, can't personalize
+    if not user_profile.topic_embeddings:
+        print("[DEBUG] personalized_retrieve: no topic embeddings, using standard")
+        return await retrieve(
+            query, top_k, source_scope=source_scope, standard_id=standard_id
+        )
+
+    k = top_k or TOP_K
+
+    # Retrieve more candidates for filtering (2x to account for filtering)
+    extended_k = max(k, min(k * 2, 20))
+
+    # Standard retrieval with embeddings for scoring
+    results = await retrieve(
+        query,
+        extended_k,
+        source_scope=source_scope,
+        standard_id=standard_id,
+        include_vectors=True,
+    )
+
+    print(f"[DEBUG] personalized_retrieve: balance={balance}, candidates={len(results)}")
+
+    # Score and filter based on user profile
+    scored_results: list[tuple[RagResult, float, float]] = []
+    for result in results:
+        base_score = result.score
+        embedding = result.metadata.get("_embedding")
+
+        if embedding and user_profile is not None:
+            profile_relevance = compute_profile_relevance(embedding, user_profile)
+        else:
+            profile_relevance = 0.5  # Neutral if no embedding
+
+        # Apply negative filter: skip chunks below relevance threshold when balance < 1
+        if balance < 0.5 and profile_relevance < PROFILE_RELEVANCE_THRESHOLD:
+            print(f"[DEBUG] filtered out chunk with relevance={profile_relevance:.3f}")
+            continue
+
+        # Blend scores
+        blended_score = balance * base_score + (1 - balance) * profile_relevance
+
+        # Store scores in metadata for debugging
+        result.metadata["_original_score"] = base_score
+        result.metadata["_profile_relevance"] = profile_relevance
+        result.metadata["_blended_score"] = blended_score
+
+        scored_results.append((result, blended_score, profile_relevance))
+
+    # Sort by blended score
+    scored_results.sort(key=lambda x: x[1], reverse=True)
+
+    # Take top k and update scores
+    final_results: list[RagResult] = []
+    for result, blended_score, _ in scored_results[:k]:
+        # Clean up embedding from metadata (large, not needed downstream)
+        result.metadata.pop("_embedding", None)
+        # Update score to blended score
+        result.score = blended_score
+        final_results.append(result)
+
+    print(f"[DEBUG] personalized_retrieve: returning {len(final_results)} results")
+    return final_results
 
 
 def build_context(results: list[RagResult]) -> str:

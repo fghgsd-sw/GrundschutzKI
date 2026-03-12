@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -45,8 +48,29 @@ def init_chat_db(db_path: Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created
             ON chat_messages(session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id TEXT PRIMARY KEY,
+                topics_json TEXT NOT NULL DEFAULT '[]',
+                topic_embeddings_json TEXT NOT NULL DEFAULT '[]',
+                excluded_bausteine_json TEXT NOT NULL DEFAULT '[]',
+                selected_chat_profile TEXT,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_id
+            ON chat_sessions(user_id);
             """
         )
+        # Migration: add selected_chat_profile column if it doesn't exist
+        cursor = conn.execute("PRAGMA table_info(user_profiles)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "selected_chat_profile" not in columns:
+            conn.execute(
+                "ALTER TABLE user_profiles ADD COLUMN selected_chat_profile TEXT"
+            )
         conn.commit()
 
 
@@ -289,3 +313,182 @@ def export_all_sessions_openai_jsonl(db_path: Path, out_path: Path) -> Path:
             f.write(json.dumps(payload, ensure_ascii=False))
             f.write("\n")
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# User Profile Management for Personalization
+# ---------------------------------------------------------------------------
+
+
+def get_user_profile(db_path: Path, user_id: str) -> dict[str, Any] | None:
+    """Retrieve user profile with extracted topics and preferences."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT user_id, topics_json, topic_embeddings_json, excluded_bausteine_json,
+                   message_count, created_at, updated_at
+            FROM user_profiles
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    for field in ("topics_json", "topic_embeddings_json", "excluded_bausteine_json"):
+        raw = item.get(field, "[]")
+        try:
+            item[field.replace("_json", "")] = json.loads(raw) if isinstance(raw, str) else []
+        except json.JSONDecodeError:
+            item[field.replace("_json", "")] = []
+        item.pop(field, None)
+    return item
+
+
+def upsert_user_profile(
+    db_path: Path,
+    user_id: str,
+    *,
+    topics: list[str] | None = None,
+    topic_embeddings: list[list[float]] | None = None,
+    excluded_bausteine: list[str] | None = None,
+    selected_chat_profile: str | None = None,
+    message_count: int | None = None,
+) -> None:
+    """Create or update user profile with extracted topics and embeddings."""
+    now = _utc_now_iso()
+    with _connect(db_path) as conn:
+        existing = conn.execute(
+            "SELECT user_id FROM user_profiles WHERE user_id = ?", (user_id,)
+        ).fetchone()
+
+        if existing:
+            updates: list[str] = ["updated_at = ?"]
+            params: list[Any] = [now]
+            if topics is not None:
+                updates.append("topics_json = ?")
+                params.append(json.dumps(topics, ensure_ascii=False))
+            if topic_embeddings is not None:
+                updates.append("topic_embeddings_json = ?")
+                params.append(json.dumps(topic_embeddings, ensure_ascii=False))
+            if excluded_bausteine is not None:
+                updates.append("excluded_bausteine_json = ?")
+                params.append(json.dumps(excluded_bausteine, ensure_ascii=False))
+            if selected_chat_profile is not None:
+                updates.append("selected_chat_profile = ?")
+                params.append(selected_chat_profile)
+            if message_count is not None:
+                updates.append("message_count = ?")
+                params.append(message_count)
+            params.append(user_id)
+            conn.execute(
+                f"UPDATE user_profiles SET {', '.join(updates)} WHERE user_id = ?",
+                params,
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO user_profiles (user_id, topics_json, topic_embeddings_json,
+                    excluded_bausteine_json, selected_chat_profile, message_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    json.dumps(topics or [], ensure_ascii=False),
+                    json.dumps(topic_embeddings or [], ensure_ascii=False),
+                    json.dumps(excluded_bausteine or [], ensure_ascii=False),
+                    selected_chat_profile,
+                    message_count or 0,
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
+
+
+def get_user_message_history(
+    db_path: Path,
+    user_id: str,
+    limit: int = 100,
+    role_filter: str | None = "user",
+) -> list[dict[str, Any]]:
+    """Get recent messages for a user across all their sessions for profile extraction."""
+    with _connect(db_path) as conn:
+        if role_filter:
+            rows = conn.execute(
+                """
+                SELECT m.content, m.role, m.created_at, s.id as session_id, s.title as session_title
+                FROM chat_messages m
+                JOIN chat_sessions s ON m.session_id = s.id
+                WHERE s.user_id = ? AND m.role = ?
+                ORDER BY m.created_at DESC
+                LIMIT ?
+                """,
+                (user_id, role_filter, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT m.content, m.role, m.created_at, s.id as session_id, s.title as session_title
+                FROM chat_messages m
+                JOIN chat_sessions s ON m.session_id = s.id
+                WHERE s.user_id = ?
+                ORDER BY m.created_at DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_user_message_count(db_path: Path, user_id: str) -> int:
+    """Count total messages for a user to determine if profile extraction should run."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) as cnt
+            FROM chat_messages m
+            JOIN chat_sessions s ON m.session_id = s.id
+            WHERE s.user_id = ? AND m.role = 'user'
+            """,
+            (user_id,),
+        ).fetchone()
+    return row["cnt"] if row else 0
+
+
+def get_user_selected_chat_profile(db_path: Path, user_id: str) -> str | None:
+    """Get the user's persisted chat profile selection.
+
+    Requires init_chat_db() to have run at startup (handles schema migration).
+    """
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT selected_chat_profile FROM user_profiles WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return row["selected_chat_profile"] if row else None
+    except sqlite3.Error as e:
+        logger.error(
+            "Failed to query selected_chat_profile for user_id=%s: %s",
+            user_id,
+            e,
+        )
+        return None
+
+
+def set_user_selected_chat_profile(
+    db_path: Path, user_id: str, profile_name: str | None
+) -> None:
+    """Set the user's chat profile selection persistently."""
+    upsert_user_profile(db_path, user_id, selected_chat_profile=profile_name)
+
+
+def delete_user_profile(db_path: Path, user_id: str) -> bool:
+    """Delete user profile (GDPR compliance)."""
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM user_profiles WHERE user_id = ?", (user_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
