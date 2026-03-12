@@ -25,6 +25,7 @@ from settings import (
     CHAT_DB_PATH,
     PERSONALIZATION_ENABLED,
     PROFILE_MIN_MESSAGES,
+    PROFILE_RELEVANCE_THRESHOLD,
     PROFILE_TOPIC_LIMIT,
 )
 
@@ -181,13 +182,15 @@ async def update_user_profile(
     existing = get_user_profile(db, user_id)
     if existing and not force:
         # Only update if message count increased significantly (10+ new messages)
-        if existing.get("message_count", 0) + 10 > message_count:
+        existing_count = existing.get("message_count", 0)
+        threshold = existing_count + 10
+        if message_count < threshold:
             return UserProfile(
                 user_id=user_id,
                 topics=existing.get("topics", []),
                 topic_embeddings=existing.get("topic_embeddings", []),
                 excluded_bausteine=existing.get("excluded_bausteine", []),
-                message_count=existing.get("message_count", 0),
+                message_count=existing_count,
             )
 
     # Extract topics via LLM
@@ -198,7 +201,7 @@ async def update_user_profile(
     if topics:
         try:
             topic_embeddings = await embed(topics)
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
             print(f"[WARN] topic_embedding_failed: {e}")
 
     # Store in database
@@ -341,7 +344,7 @@ def compute_profile_relevance(
 def filter_by_profile_relevance(
     results: list[dict[str, Any]],
     user_profile: UserProfile,
-    threshold: float = 0.3,
+    threshold: float = PROFILE_RELEVANCE_THRESHOLD,
 ) -> list[dict[str, Any]]:
     """Filter retrieval results by relevance to user profile.
 
@@ -350,7 +353,7 @@ def filter_by_profile_relevance(
     Args:
         results: List of retrieval results with embeddings
         user_profile: User's profile
-        threshold: Minimum relevance score to keep (default 0.3)
+        threshold: Minimum relevance score to keep (default from settings)
 
     Returns:
         Filtered list of results

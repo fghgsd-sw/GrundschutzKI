@@ -34,8 +34,6 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
-      langflow:
-        condition: service_started
       ingest:
         condition: service_completed_successfully
     env_file:
@@ -62,6 +60,7 @@ services:
       - "8000:8000"
 
   langflow:
+    profiles: ["langflow"]
     image: langflowai/langflow:latest
     container_name: gski-langflow
     environment:

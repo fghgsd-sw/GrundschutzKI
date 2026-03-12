@@ -837,10 +837,21 @@ async def oauth_callback(
 ) -> cl.User | None:
     """Handle OAuth login (e.g., GitHub).
 
-    Returns the authenticated user or None to reject the login.
+    Returns a provider-specific user for GitHub, or the default user for other
+    OAuth providers.
     """
-    # Accept all users from configured OAuth providers
-    # Customize this to filter users by organization, email domain, etc.
+    if provider_id == "github":
+        return cl.User(
+            identifier=raw_user_data.get("login"),  # GitHub username
+            metadata={
+                "provider": "github",
+                "name": raw_user_data.get("name"),
+                "email": raw_user_data.get("email"),
+                "avatar_url": raw_user_data.get("avatar_url"),
+                "github_id": str(raw_user_data.get("id")),
+            },
+        )
+    # Accept all users from other configured OAuth providers
     return default_user
 
 
@@ -886,28 +897,6 @@ async def auth_callback(username: str, password: str) -> cl.User | None:
     if expected_password and username == expected_user and password == expected_password:
         return cl.User(identifier=expected_user, metadata={"provider": "password", "role": "admin"})
 
-    return None
-
-
-@cl.oauth_callback
-async def oauth_callback(
-    provider_id: str,
-    token: str,
-    raw_user_data: dict[str, str],
-    default_user: cl.User,
-) -> cl.User | None:
-    """Handle OAuth login from GitHub."""
-    if provider_id == "github":
-        return cl.User(
-            identifier=raw_user_data.get("login"),  # GitHub username
-            metadata={
-                "provider": "github",
-                "name": raw_user_data.get("name"),
-                "email": raw_user_data.get("email"),
-                "avatar_url": raw_user_data.get("avatar_url"),
-                "github_id": str(raw_user_data.get("id")),
-            },
-        )
     return None
 
 
@@ -1665,4 +1654,4 @@ async def main(message: cl.Message):
                     updated_profile = await update_user_profile(user_id)
                     cl.user_session.set("user_profile", updated_profile)
             except Exception as e:
-                print(f"[WARN] profile_update_failed: {e}")
+                print(f"[WARN] profile_update_failed for user_id={user_id}: {e.__class__.__name__}: {e}")

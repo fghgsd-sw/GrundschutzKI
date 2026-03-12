@@ -233,8 +233,6 @@ async def retrieve(
         if include_vectors and hit.vector is not None:
             if isinstance(hit.vector, list):
                 payload["_embedding"] = hit.vector
-            elif isinstance(hit.vector, dict) and "" in hit.vector:
-                payload["_embedding"] = hit.vector[""]
         hits.append(
             RagResult(
                 text=_clean_text(text),
@@ -294,7 +292,7 @@ async def personalized_retrieve(
     k = top_k or TOP_K
 
     # Retrieve more candidates for filtering (2x to account for filtering)
-    extended_k = min(k * 2, 20)
+    extended_k = max(k, min(k * 2, 20))
 
     # Standard retrieval with embeddings for scoring
     results = await retrieve(
@@ -313,7 +311,7 @@ async def personalized_retrieve(
         base_score = result.score
         embedding = result.metadata.get("_embedding")
 
-        if embedding:
+        if embedding and user_profile is not None:
             profile_relevance = compute_profile_relevance(embedding, user_profile)
         else:
             profile_relevance = 0.5  # Neutral if no embedding

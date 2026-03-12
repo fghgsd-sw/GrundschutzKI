@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -454,24 +457,23 @@ def get_user_message_count(db_path: Path, user_id: str) -> int:
 
 
 def get_user_selected_chat_profile(db_path: Path, user_id: str) -> str | None:
-    """Get the user's persisted chat profile selection."""
+    """Get the user's persisted chat profile selection.
+
+    Requires init_chat_db() to have run at startup (handles schema migration).
+    """
     try:
         with _connect(db_path) as conn:
-            # Run migration if needed
-            cursor = conn.execute("PRAGMA table_info(user_profiles)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if "selected_chat_profile" not in columns:
-                conn.execute(
-                    "ALTER TABLE user_profiles ADD COLUMN selected_chat_profile TEXT"
-                )
-                conn.commit()
-            
             row = conn.execute(
                 "SELECT selected_chat_profile FROM user_profiles WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
         return row["selected_chat_profile"] if row else None
-    except Exception:
+    except sqlite3.Error as e:
+        logger.error(
+            "Failed to query selected_chat_profile for user_id=%s: %s",
+            user_id,
+            e,
+        )
         return None
 
 

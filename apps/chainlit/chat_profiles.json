@@ -1,6 +1,6 @@
 {
   "_comment": "Chat-Profile für IT-Grundschutz Chatbot - Anpassbar durch Administratoren",
-  "_documentation": "Siehe docs/CHAT_PROFILES.md für Anleitungen zur Anpassung",
+  "_documentation": "Siehe apps/chainlit/CHAT_PROFILES.md für Anleitungen zur Anpassung",
 
   "profiles": [
     {

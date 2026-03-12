@@ -110,10 +110,9 @@ Output:
  M apps/chainlit/docker-compose.yml
  M apps/chainlit/rag_tool.py
  M system.md
-?? .vscode/
-?? copilot-instructions.md
-?? diagramm.md
 ```
+
+> Note: `.vscode/`, `copilot-instructions.md`, and `diagramm.md` were local untracked files and not part of the repo.
 
 ### Diff stats
 ```bash
