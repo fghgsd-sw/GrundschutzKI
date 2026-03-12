@@ -90,3 +90,12 @@ DATABASE_URL = _getenv("DATABASE_URL")
 CHAINLIT_AUTH_USERNAME = _getenv("CHAINLIT_AUTH_USERNAME", "admin")
 CHAINLIT_AUTH_PASSWORD = _getenv("CHAINLIT_AUTH_PASSWORD", "admin")
 CHAINLIT_INIT_DB = (_getenv("CHAINLIT_INIT_DB", "true") or "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Personalization Settings
+# ---------------------------------------------------------------------------
+PERSONALIZATION_ENABLED = (_getenv("PERSONALIZATION_ENABLED", "true") or "true").lower() == "true"
+PROFILE_MIN_MESSAGES = int(_getenv("PROFILE_MIN_MESSAGES", "5"))
+PROFILE_TOPIC_LIMIT = int(_getenv("PROFILE_TOPIC_LIMIT", "8"))
+PROFILE_RELEVANCE_THRESHOLD = float(_getenv("PROFILE_RELEVANCE_THRESHOLD", "0.3"))
+PERSONALIZED_FOLLOWUPS_COUNT = int(_getenv("PERSONALIZED_FOLLOWUPS_COUNT", "2"))
