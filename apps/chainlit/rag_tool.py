@@ -36,6 +36,30 @@ _client: QdrantClient | None = None
 _citation_map: dict[str, dict[str, str]] | None = None
 
 
+def _canonical_pdf_from_text(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    lower = raw.lower()
+
+    if lower.endswith(".pdf"):
+        return raw.split("/")[-1]
+
+    if "standard_200_1" in lower or "standard 200 1" in lower:
+        return "standard_200_1.pdf"
+    if "standard_200_2" in lower or "standard 200 2" in lower:
+        return "standard_200_2.pdf"
+    if "standard_200_3" in lower or "standard 200 3" in lower:
+        return "standard_200_3.pdf"
+    if "standard_200_4" in lower or "standard 200 4" in lower:
+        return "standard_200_4.pdf"
+
+    if "kompendium" in lower or "grundschutz" in lower:
+        return GRUNDSCHUTZ_SOURCE_PDF
+
+    return None
+
+
 def _get_client() -> QdrantClient:
     global _client
     if _client is None:
@@ -83,19 +107,32 @@ def _extract_citation(payload: dict[str, Any]) -> str:
 
 def extract_source_file(payload: dict[str, Any]) -> str | None:
     value = payload.get("file")
-    if isinstance(value, str) and value.lower().endswith(".pdf"):
-        return value
+    if isinstance(value, str):
+        resolved = _canonical_pdf_from_text(value)
+        if resolved:
+            return resolved
 
     source = payload.get("source")
     if isinstance(source, dict):
         value = source.get("file")
-        if isinstance(value, str) and value.lower().endswith(".pdf"):
-            return value
+        if isinstance(value, str):
+            resolved = _canonical_pdf_from_text(value)
+            if resolved:
+                return resolved
 
-    for key in ("source", "document"):
+        for key in ("document", "title", "source"):
+            nested = source.get(key)
+            if isinstance(nested, str):
+                resolved = _canonical_pdf_from_text(nested)
+                if resolved:
+                    return resolved
+
+    for key in ("source", "document", "title"):
         value = payload.get(key)
-        if isinstance(value, str) and value.lower().endswith(".pdf"):
-            return value
+        if isinstance(value, str):
+            resolved = _canonical_pdf_from_text(value)
+            if resolved:
+                return resolved
 
     # Fallback for Grundschutz chunks ingested from structured JSON without explicit PDF file.
     source = payload.get("source")

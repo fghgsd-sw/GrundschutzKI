@@ -34,6 +34,8 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      langflow:
+        condition: service_started
       ingest:
         condition: service_completed_successfully
     env_file:
@@ -49,13 +51,26 @@ services:
       # IMPORTANT: in container, use mounted absolute paths
       DATA_RAW_DIR: /data/data_raw
       SYSTEM_PROMPT_PATH: /workspace/system.md
+      LANGFLOW_BASE_URL: ${LANGFLOW_BASE_URL:-http://langflow:7860}
     volumes:
+      - .:/app
       - ./.chainlit:/app/.chainlit
       - ./.files:/app/.files
       - ../../data:/data
       - ../../system.md:/workspace/system.md:ro
     ports:
       - "8000:8000"
+
+  langflow:
+    image: langflowai/langflow:latest
+    container_name: gski-langflow
+    environment:
+      LANGFLOW_HOST: 0.0.0.0
+      LANGFLOW_PORT: 7860
+    ports:
+      - "7860:7860"
+    volumes:
+      - langflow_data:/app/langflow
 
   ingest:
     build:
@@ -142,3 +157,4 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
+  langflow_data:

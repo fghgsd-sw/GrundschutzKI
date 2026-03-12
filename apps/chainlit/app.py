@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import bcrypt
 import chainlit as cl
 from chainlit.auth import get_current_user
 from chainlit.input_widget import Select
 from chainlit.types import Starter
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from chat_history import (
     add_chat_message,
@@ -29,7 +31,13 @@ from chat_history import (
     set_user_selected_chat_profile,
 )
 from llm import chat, message_to_dict
-from native_chat import ensure_native_schema, export_all_chats_zip
+from native_chat import (
+    check_user_exists,
+    create_user,
+    ensure_native_schema,
+    export_all_chats_zip,
+    get_user_by_identifier,
+)
 from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve, personalized_retrieve
 from settings import (
     CHAT_DB_PATH,
@@ -433,9 +441,11 @@ def _normalize_source_alias_mentions(text: str, alias_by_index: dict[int, str]) 
         idx = int(match.group(1))
         return alias_by_index.get(idx, match.group(0))
 
-    # Normalize free-form mentions like "Quelle 1: ... (S.x-y)" to exact alias token.
+    # Normalize free-form mentions like
+    # "Quelle 1: APP.3.2.A20 ... (S) [Zentrale Verwaltung] (S.397)" or
+    # "Quelle 2: Einleitung ... (Seite 12)" to exact alias token.
     text = re.sub(
-        r"Quelle\s*([0-9]+)\s*:\s*[^()\n]*\(S\.[^)]*\)",
+        r"Quelle\s*([0-9]+)\s*:\s*[^\n]*?\((?:S\.?|Seite)\s*[^)\n]+\)",
         repl,
         text,
         flags=re.IGNORECASE,
@@ -453,7 +463,68 @@ def _normalize_source_alias_mentions(text: str, alias_by_index: dict[int, str]) 
         text,
         flags=re.IGNORECASE,
     )
+    # Normalize plain mentions like "Quelle 2" (without trailing ": ...").
+    text = re.sub(
+        r"\bQuelle\s*([0-9]+)\b(?!\s*:)",
+        repl,
+        text,
+        flags=re.IGNORECASE,
+    )
     return text
+
+
+def _normalize_source_mentions_by_content(
+    text: str,
+    source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]],
+) -> str:
+    if not text or not source_rows:
+        return text
+
+    def norm(s: str) -> str:
+        s = s.lower()
+        s = re.sub(r"[^a-z0-9äöüß]+", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    entries = []
+    for _, alias, _, page_start, page_end, section_title, _ in source_rows:
+        entries.append(
+            {
+                "alias": alias,
+                "section": norm(section_title or ""),
+                "page_start": page_start,
+                "page_end": page_end,
+            }
+        )
+
+    def repl(match: re.Match) -> str:
+        raw = match.group(0)
+        page_match = re.search(r"(?:S\.?|Seite)\s*(\d+)", raw, flags=re.IGNORECASE)
+        wanted_page = int(page_match.group(1)) if page_match else None
+        rnorm = norm(raw)
+
+        best_alias = None
+        best_score = 0
+        for entry in entries:
+            score = 0
+            if wanted_page is not None:
+                start = entry["page_start"]
+                end = entry["page_end"] or start
+                if isinstance(start, int) and isinstance(end, int) and start <= wanted_page <= end:
+                    score += 3
+            if entry["section"] and any(tok in rnorm for tok in entry["section"].split()[:5]):
+                score += 2
+            if score > best_score:
+                best_score = score
+                best_alias = entry["alias"]
+
+        return best_alias if best_alias and best_score >= 2 else raw
+
+    return re.sub(
+        r"Quelle\s*\d+\s*:\s*[^\n]{1,260}?\((?:S\.?|Seite)\s*[^)\n]+\)",
+        repl,
+        text,
+        flags=re.IGNORECASE,
+    )
 
 
 def _desired_source_count(text: str, available: int) -> int:
@@ -465,6 +536,7 @@ def _desired_source_count(text: str, available: int) -> int:
         r"【(\d+)[^】]*】",
         r"\[(\d+)†[^\]]*\]",
         r"Quelle\s*(\d+)\s*:",
+        r"\bQuelle\s*(\d+)\b",
     ):
         refs.extend(int(x) for x in re.findall(pattern, text or ""))
     if refs:
@@ -772,14 +844,70 @@ async def oauth_callback(
     return default_user
 
 
+def _coerce_step_metadata(step: dict[str, Any]) -> dict[str, Any]:
+    raw = step.get("metadata")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password using bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    """Verify a password against a bcrypt hash."""
+    return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+
+
 @cl.password_auth_callback
 async def auth_callback(username: str, password: str) -> cl.User | None:
+    # Try database authentication first (if DATABASE_URL is configured)
+    if DATABASE_URL:
+        user = await get_user_by_identifier(DATABASE_URL, username)
+        if user and user.get("password_hash"):
+            if _verify_password(password, user["password_hash"]):
+                metadata = json.loads(user.get("metadata") or "{}")
+                metadata["provider"] = "local"
+                return cl.User(identifier=user["identifier"], metadata=metadata)
+            return None  # Wrong password for existing user
+
+    # Fallback to environment variable authentication (for backwards compatibility / admin)
     expected_user = CHAINLIT_AUTH_USERNAME or "admin"
     expected_password = CHAINLIT_AUTH_PASSWORD
-    if not expected_password:
-        return None
-    if username == expected_user and password == expected_password:
-        return cl.User(identifier=expected_user, metadata={"provider": "password"})
+    if expected_password and username == expected_user and password == expected_password:
+        return cl.User(identifier=expected_user, metadata={"provider": "password", "role": "admin"})
+
+    return None
+
+
+@cl.oauth_callback
+async def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: dict[str, str],
+    default_user: cl.User,
+) -> cl.User | None:
+    """Handle OAuth login from GitHub."""
+    if provider_id == "github":
+        return cl.User(
+            identifier=raw_user_data.get("login"),  # GitHub username
+            metadata={
+                "provider": "github",
+                "name": raw_user_data.get("name"),
+                "email": raw_user_data.get("email"),
+                "avatar_url": raw_user_data.get("avatar_url"),
+                "github_id": str(raw_user_data.get("id")),
+            },
+        )
     return None
 
 
@@ -801,6 +929,8 @@ async def on_app_startup() -> None:
         TOP_K,
         "| mode: simple_docling",
     )
+    from chainlit.server import app as chainlit_fastapi_app
+
     if DATABASE_URL and CHAINLIT_INIT_DB:
         await ensure_native_schema(DATABASE_URL)
 
@@ -809,8 +939,6 @@ async def on_app_startup() -> None:
 
     if not DATABASE_URL:
         return
-
-    from chainlit.server import app as chainlit_fastapi_app
 
     if getattr(chainlit_fastapi_app.state, "native_export_route_added", False):
         return
@@ -827,13 +955,47 @@ async def on_app_startup() -> None:
         )
         return FileResponse(path=str(bundle), media_type="application/zip", filename=bundle.name)
 
+    # Registration endpoint for self-registration
+    class RegisterRequest(BaseModel):
+        username: str
+        email: str
+        password: str
+
+    @chainlit_fastapi_app.post("/auth/register")
+    async def register_user(request: RegisterRequest):
+        # Validate input
+        if not request.username or len(request.username) < 3:
+            raise HTTPException(status_code=400, detail="Benutzername muss mindestens 3 Zeichen haben")
+        if not request.email or "@" not in request.email:
+            raise HTTPException(status_code=400, detail="Ungültige E-Mail-Adresse")
+        if not request.password or len(request.password) < 8:
+            raise HTTPException(status_code=400, detail="Passwort muss mindestens 8 Zeichen haben")
+
+        # Check if user/email already exists
+        exists = await check_user_exists(DATABASE_URL, request.username, request.email)
+        if exists["username_exists"]:
+            raise HTTPException(status_code=409, detail="Benutzername bereits vergeben")
+        if exists["email_exists"]:
+            raise HTTPException(status_code=409, detail="E-Mail-Adresse bereits registriert")
+
+        # Create user with hashed password
+        password_hash = _hash_password(request.password)
+        user = await create_user(DATABASE_URL, request.username, request.email, password_hash)
+        if user is None:
+            raise HTTPException(status_code=500, detail="Registrierung fehlgeschlagen")
+
+        return {"message": "Registrierung erfolgreich", "username": user["identifier"]}
+
     chainlit_fastapi_app.state.native_export_route_added = True
     print("[STARTUP] native export route registered at /export/all-chats")
+    print("[STARTUP] registration route registered at /auth/register")
 
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: dict[str, Any]):
     messages: list[dict[str, Any]] = []
+    restored_panel_content: str | None = None
+    restored_source_rows: list[dict[str, Any]] = []
     if SYSTEM_PROMPT:
         messages.append({"role": "system", "content": SYSTEM_PROMPT})
 
@@ -852,8 +1014,25 @@ async def on_chat_resume(thread: dict[str, Any]):
             text = _coerce_step_text(step.get("output") or step.get("input"))
             if text:
                 messages.append({"role": "assistant", "content": text})
+            metadata = _coerce_step_metadata(step)
+            panel_content = metadata.get("citation_panel_content")
+            source_rows = metadata.get("citation_source_rows")
+            if isinstance(panel_content, str) and panel_content.strip():
+                restored_panel_content = panel_content
+            if isinstance(source_rows, list):
+                valid_rows: list[dict[str, Any]] = []
+                for row in source_rows:
+                    if isinstance(row, dict):
+                        file_name = row.get("file")
+                        alias = row.get("alias")
+                        if isinstance(file_name, str) and isinstance(alias, str):
+                            valid_rows.append(row)
+                if valid_rows:
+                    restored_source_rows = valid_rows
 
     cl.user_session.set("messages", messages)
+    cl.user_session.set("citation_panel_content", restored_panel_content)
+    cl.user_session.set("citation_source_rows", restored_source_rows)
 
 
 @cl.set_chat_profiles
@@ -1118,7 +1297,7 @@ async def main(message: cl.Message):
     add_chat_message(CHAT_DB_PATH, session_id, "user", message.content)
     set_session_title_if_missing(CHAT_DB_PATH, session_id, _first_sentence(message.content, max_len=96))
 
-    response = await chat(messages, tools=TOOLS, tool_choice="auto")
+    response = await chat(messages, tools=TOOLS, tool_choice="required")
     assistant_msg = response.choices[0].message
     print(
         "[DEBUG] first_call",
@@ -1128,6 +1307,27 @@ async def main(message: cl.Message):
         bool(getattr(assistant_msg, "tool_calls", None)),
     )
 
+    if not getattr(assistant_msg, "tool_calls", None):
+        print("[WARN] first_call_without_tool_retrying")
+        retry_messages = [
+            *messages,
+            {
+                "role": "system",
+                "content": "Rufe zuerst das Tool rag_retrieve auf, bevor du antwortest.",
+            },
+        ]
+        retry_response = await chat(retry_messages, tools=TOOLS, tool_choice="required")
+        retry_msg = retry_response.choices[0].message
+        print(
+            "[DEBUG] first_call_retry",
+            "content_empty=",
+            not bool(retry_msg.content),
+            "tool_calls=",
+            bool(getattr(retry_msg, "tool_calls", None)),
+        )
+        if getattr(retry_msg, "tool_calls", None):
+            assistant_msg = retry_msg
+
     if getattr(assistant_msg, "tool_calls", None):
         citations_text: str | None = None
         last_results = []
@@ -1135,6 +1335,7 @@ async def main(message: cl.Message):
         current_msg = assistant_msg
         aggregated_by_key: dict[tuple[str, int | None, str], Any] = {}
         cached_tool_payloads: dict[str, tuple[list[Any], dict[str, Any]]] = {}
+
         max_tool_rounds_raw = os.getenv("MAX_TOOL_CALL_ROUNDS", "12")
         try:
             max_tool_rounds = max(1, int(max_tool_rounds_raw))
@@ -1323,6 +1524,9 @@ async def main(message: cl.Message):
             page = extract_page(result.metadata)
             key = (file_name, page)
             if key in seen_links:
+                existing_alias = next((alias for _, alias, fname, pstart, _, _, _ in source_rows if fname == file_name and pstart == page), None)
+                if existing_alias:
+                    alias_by_index[idx] = existing_alias
                 continue
             file_path = (DATA_RAW_DIR / file_name).resolve()
             if file_path.exists():
@@ -1355,6 +1559,8 @@ async def main(message: cl.Message):
         content = _inject_named_source_refs(content, source_rows)
         # Normalize model-written "Quelle n: ..." strings to exact alias values.
         content = _normalize_source_alias_mentions(content, alias_by_index)
+        # Fallback: if model index does not match retrieved order, map by title/page similarity.
+        content = _normalize_source_mentions_by_content(content, source_rows)
 
         # Build a detailed source block for the citation panel.
         detail_block = ""
@@ -1382,9 +1588,10 @@ async def main(message: cl.Message):
             cl.user_session.set("citation_panel_content", None)
             cl.user_session.set("citation_source_rows", [])
 
-        if citation_panel_content:
-            content = f"{content}\n\nZitationsfenster: CITATIONS_PANEL"
         content, followups = _extract_followups(content)
+        render_content = content
+        if citation_panel_content and "Zitationsfenster: CITATIONS_PANEL" not in render_content:
+            render_content = f"{render_content}\n\nZitationsfenster: CITATIONS_PANEL"
         actions: list[cl.Action] = []
         for question in followups:
             actions.append(
@@ -1396,14 +1603,27 @@ async def main(message: cl.Message):
                 )
             )
         print("[DEBUG] followup_actions=", len(followups), "total_actions=", len(actions))
-        await cl.Message(content=content, elements=elements or None, actions=actions).send()
+        message_metadata: dict[str, Any] = {
+            "has_citations_panel": bool(citation_panel_content),
+            "followup_count": len(followups),
+        }
+        if citation_panel_content:
+            message_metadata["citation_panel_content"] = citation_panel_content
+            message_metadata["citation_source_rows"] = source_rows_for_session
+
+        await cl.Message(
+            content=render_content,
+            elements=elements or None,
+            actions=actions,
+            metadata=message_metadata,
+        ).send()
         messages.append({"role": "assistant", "content": content})
         add_chat_message(
             CHAT_DB_PATH,
             session_id,
             "assistant",
             content,
-            metadata={"has_citations_panel": bool(citation_panel_content), "followup_count": len(followups)},
+            metadata=message_metadata,
         )
     else:
         content = assistant_msg.content or ""

@@ -97,6 +97,7 @@ This starts:
 - `chainlit` on `http://localhost:8000`
 - `postgres` on `localhost:5432` (native Chainlit thread persistence)
 - `qdrant` on `http://localhost:6333`
+- `langflow` on `http://localhost:7860`
 - `ingest` one-shot container (runs `ingest_docling.py` before Chainlit starts)
 
 Note:
@@ -108,6 +109,14 @@ For native left sidebar history, keep these env vars set:
 - `CHAINLIT_AUTH_SECRET`
 - `CHAINLIT_AUTH_USERNAME`
 - `CHAINLIT_AUTH_PASSWORD`
+
+Optional Langflow agent tool:
+- `LANGFLOW_ENABLED=true`
+- `LANGFLOW_BASE_URL=http://langflow:7860` (Docker) or `http://localhost:7860` (local)
+- `LANGFLOW_FLOW_ID=<your_flow_id>`
+- `LANGFLOW_API_KEY=<optional_api_key>`
+
+When enabled, the LLM can call `langflow_agent` as an additional tool next to `rag_retrieve`.
 
 Auto-ingestion controls (in `.env`):
 - `INGEST_DOCLING_JSON_DIR` (default `/data/data_docling_json_ocr`)
