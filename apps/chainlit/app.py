@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 import bcrypt
@@ -73,6 +74,66 @@ def _load_system_prompt(path: Path) -> str | None:
 
 
 SYSTEM_PROMPT = _load_system_prompt(SYSTEM_PROMPT_PATH)
+
+
+def _allowed_source_pdf_names() -> set[str]:
+    if not DATA_RAW_DIR.is_dir():
+        return set()
+    try:
+        return {
+            entry.name
+            for entry in DATA_RAW_DIR.iterdir()
+            if entry.is_file() and entry.suffix.lower() == ".pdf"
+        }
+    except OSError:
+        return set()
+
+
+def _resolve_source_pdf_path(file_name: str, allowed_names: set[str] | None = None) -> Path | None:
+    if not file_name or file_name != Path(file_name).name:
+        return None
+
+    candidates = allowed_names if allowed_names is not None else _allowed_source_pdf_names()
+    if file_name not in candidates:
+        return None
+
+    data_root = DATA_RAW_DIR.resolve()
+    file_path = (DATA_RAW_DIR / file_name).resolve()
+    try:
+        file_path.relative_to(data_root)
+    except ValueError:
+        return None
+
+    if not file_path.is_file() or file_path.suffix.lower() != ".pdf":
+        return None
+    return file_path
+
+
+def _source_pdf_url(file_name: str) -> str:
+    return f"/sources/pdf/{quote(file_name, safe='')}"
+
+
+def _ensure_route_precedes_catch_all(fastapi_app: Any, route_path: str) -> None:
+    routes = getattr(getattr(fastapi_app, "router", None), "routes", None)
+    if not isinstance(routes, list):
+        return
+
+    route_idx = next((i for i, route in enumerate(routes) if getattr(route, "path", None) == route_path), None)
+    catch_all_idx = next(
+        (
+            i
+            for i, route in enumerate(routes)
+            if isinstance(getattr(route, "path", None), str)
+            and str(getattr(route, "path")).endswith("/{full_path:path}")
+        ),
+        None,
+    )
+
+    if route_idx is None or catch_all_idx is None or route_idx < catch_all_idx:
+        return
+
+    route = routes.pop(route_idx)
+    routes.insert(catch_all_idx, route)
 
 # Chat profiles configuration
 CHAT_PROFILES_PATH = Path(__file__).parent / "chat_profiles.json"
@@ -347,13 +408,17 @@ def _resolve_section_title(metadata: dict[str, Any]) -> str | None:
     return None
 
 
-def _inject_clickable_refs(text: str, alias_by_index: dict[int, str]) -> str:
-    if not text or not alias_by_index:
+def _inject_clickable_refs(
+    text: str,
+    alias_by_index: dict[int, str],
+    alias_by_number: dict[int, str] | None = None,
+) -> str:
+    if not text or (not alias_by_index and not alias_by_number):
         return text
 
     def repl(match: re.Match) -> str:
         idx = int(match.group(1))
-        alias = alias_by_index.get(idx)
+        alias = alias_by_index.get(idx) or (alias_by_number or {}).get(idx)
         if not alias:
             return match.group(0)
         return alias
@@ -364,6 +429,16 @@ def _inject_clickable_refs(text: str, alias_by_index: dict[int, str]) -> str:
     # Covers citations like: [1]
     text = re.sub(r"\[(\d+)\]", repl, text)
     return text
+
+
+def _alias_number_map(source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]]) -> dict[int, str]:
+    alias_by_number: dict[int, str] = {}
+    for _, alias, *_ in source_rows:
+        match = re.match(r"^\s*Quelle\s+(\d+)\s*:", alias, flags=re.IGNORECASE)
+        if not match:
+            continue
+        alias_by_number[int(match.group(1))] = alias
+    return alias_by_number
 
 
 def _inject_named_source_refs(
@@ -433,13 +508,17 @@ def _inject_named_source_refs(
     return re.sub(r"\[([^\[\]]{3,140})\]", replace_bracket, text)
 
 
-def _normalize_source_alias_mentions(text: str, alias_by_index: dict[int, str]) -> str:
-    if not text or not alias_by_index:
+def _normalize_source_alias_mentions(
+    text: str,
+    alias_by_index: dict[int, str],
+    alias_by_number: dict[int, str] | None = None,
+) -> str:
+    if not text or (not alias_by_index and not alias_by_number):
         return text
 
     def repl(match: re.Match) -> str:
         idx = int(match.group(1))
-        return alias_by_index.get(idx, match.group(0))
+        return alias_by_index.get(idx) or (alias_by_number or {}).get(idx, match.group(0))
 
     # Normalize free-form mentions like
     # "Quelle 1: APP.3.2.A20 ... (S) [Zentrale Verwaltung] (S.397)" or
@@ -932,6 +1011,21 @@ async def on_app_startup() -> None:
     if getattr(chainlit_fastapi_app.state, "native_export_route_added", False):
         return
 
+    @chainlit_fastapi_app.get("/sources/pdf/{file_name:path}")
+    async def source_pdf(file_name: str, current_user=Depends(get_current_user)):
+        if current_user is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        file_path = _resolve_source_pdf_path(file_name)
+        if file_path is None:
+            raise HTTPException(status_code=404, detail="Source PDF not found")
+
+        return FileResponse(
+            path=str(file_path),
+            media_type="application/pdf",
+            headers={"Content-Disposition": "inline"},
+        )
+
     @chainlit_fastapi_app.get("/export/all-chats")
     async def export_all_chats(current_user=Depends(get_current_user)):
         if current_user is None:
@@ -974,6 +1068,10 @@ async def on_app_startup() -> None:
             raise HTTPException(status_code=500, detail="Registrierung fehlgeschlagen")
 
         return {"message": "Registrierung erfolgreich", "username": user["identifier"]}
+
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/sources/pdf/{file_name:path}")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/all-chats")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/register")
 
     chainlit_fastapi_app.state.native_export_route_added = True
     print("[STARTUP] native export route registered at /export/all-chats")
@@ -1219,13 +1317,13 @@ async def open_source_pdf(action: cl.Action):
     page = action.payload.get("page")
     if not isinstance(file_name, str):
         return
-    file_path = (DATA_RAW_DIR / file_name).resolve()
-    if not file_path.exists():
+    file_path = _resolve_source_pdf_path(file_name)
+    if file_path is None:
         await cl.Message(content=f"Datei nicht gefunden: {file_name}").send()
         return
 
     pdf_name = f"{file_name} (S.{page})" if isinstance(page, int) else file_name
-    element = cl.Pdf(name=pdf_name, path=str(file_path), page=page if isinstance(page, int) else 1, display="side")
+    element = cl.Pdf(name=pdf_name, url=_source_pdf_url(file_name), page=page if isinstance(page, int) else 1, display="side")
     await cl.Message(content=f"Quelle geöffnet: {pdf_name}", elements=[element]).send()
 
 
@@ -1238,6 +1336,7 @@ async def open_all_citations(action: cl.Action):
         return
 
     elements: list[Any] = [cl.Text(name="CITATIONS_PANEL", content=panel_content, display="side")]
+    allowed_pdf_names = _allowed_source_pdf_names()
     for row in source_rows:
         if not isinstance(row, dict):
             continue
@@ -1246,13 +1345,13 @@ async def open_all_citations(action: cl.Action):
         alias = row.get("alias")
         if not isinstance(file_name, str) or not isinstance(alias, str):
             continue
-        file_path = (DATA_RAW_DIR / file_name).resolve()
-        if not file_path.exists():
+        file_path = _resolve_source_pdf_path(file_name, allowed_pdf_names)
+        if file_path is None:
             continue
         elements.append(
             cl.Pdf(
                 name=alias,
-                path=str(file_path),
+                url=_source_pdf_url(file_name),
                 page=page if isinstance(page, int) else 1,
                 display="side",
             )
@@ -1497,7 +1596,7 @@ async def main(message: cl.Message):
 
         elements = []
 
-        # Attach local PDFs as clickable page-specific links.
+        # Attach source PDFs as endpoint URLs to avoid session-scoped file copies.
         seen_links: set[tuple[str, int | None]] = set()
         source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]] = []
         alias_by_index: dict[int, str] = {}
@@ -1505,6 +1604,7 @@ async def main(message: cl.Message):
         desired_sources = _desired_source_count(content, len(last_results))
         if MAX_SOURCE_LINKS > 0:
             desired_sources = min(desired_sources, MAX_SOURCE_LINKS)
+        allowed_pdf_names = _allowed_source_pdf_names()
         link_counter = 1
         for idx, result in enumerate(last_results, start=1):
             file_name = extract_source_file(result.metadata)
@@ -1517,13 +1617,13 @@ async def main(message: cl.Message):
                 if existing_alias:
                     alias_by_index[idx] = existing_alias
                 continue
-            file_path = (DATA_RAW_DIR / file_name).resolve()
-            if file_path.exists():
+            file_path = _resolve_source_pdf_path(file_name, allowed_pdf_names)
+            if file_path is not None:
                 page_end = result.metadata.get("page_end") if isinstance(result.metadata.get("page_end"), int) else None
                 section_title = _resolve_section_title(result.metadata)
                 page_start = extract_page(result.metadata)
                 alias = _source_alias(link_counter, section_title, page_start, page_end)
-                elements.append(cl.Pdf(name=alias, path=str(file_path), page=page, display="side"))
+                elements.append(cl.Pdf(name=alias, url=_source_pdf_url(file_name), page=page, display="side"))
                 alias_by_index[idx] = alias
                 source_rows.append(
                     (
@@ -1542,12 +1642,14 @@ async def main(message: cl.Message):
             if desired_sources and len(seen_links) >= desired_sources:
                 break
 
+        alias_by_number = _alias_number_map(source_rows)
+
         # Make in-text citations clickable (supports [1], [1†...], 【1†...】).
-        content = _inject_clickable_refs(content, alias_by_index)
+        content = _inject_clickable_refs(content, alias_by_index, alias_by_number)
         # Also map named refs like [standard_200_2.pdf, S. 2] to known source aliases.
         content = _inject_named_source_refs(content, source_rows)
         # Normalize model-written "Quelle n: ..." strings to exact alias values.
-        content = _normalize_source_alias_mentions(content, alias_by_index)
+        content = _normalize_source_alias_mentions(content, alias_by_index, alias_by_number)
         # Fallback: if model index does not match retrieved order, map by title/page similarity.
         content = _normalize_source_mentions_by_content(content, source_rows)
 

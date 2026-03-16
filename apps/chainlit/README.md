@@ -249,7 +249,7 @@ python export_chats.py --format csv
 
 - `TOP_K` retrieval size
 - `MAX_SOURCE_LINKS` limits how many PDF source links are shown (default `8`)
-- `DATA_RAW_DIR` for local PDF files used by viewer links
+- `DATA_RAW_DIR` is the source directory for PDFs served via `/sources/pdf/{file_name}`
 - `STARTER_QUESTIONS` for Chainlit starter prompts (`||` separated)
 
 ## 9) Troubleshooting
@@ -269,3 +269,9 @@ python export_chats.py --format csv
 
 - **PDF viewer/citation mismatches**  
   Re-ingest with `--recreate` and ensure `DATA_RAW_DIR` points to the correct PDFs.
+
+- **`401 Unauthorized` on `/sources/pdf/...`**  
+  Log in again and verify the request is sent with an authenticated Chainlit session.
+
+- **`404 Source PDF not found` on `/sources/pdf/...`**  
+  Ensure the requested filename exists as a `.pdf` directly under `DATA_RAW_DIR`.
