@@ -20,3 +20,15 @@
   text-indent: 6px;
   transition: text-indent 120ms ease-out;
 }
+
+/* Calmer styling for source PDF links in citation panels and messages. */
+a[href*="/sources/pdf/"] {
+  color: #1f4e79 !important;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+a[href*="/sources/pdf/"]:hover {
+  color: #163a5a !important;
+  text-decoration: underline;
+}

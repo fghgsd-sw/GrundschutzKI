@@ -95,6 +95,24 @@ def create_chat_session(
         conn.commit()
 
 
+def update_chat_session_metadata(
+    db_path: Path,
+    session_id: str,
+    metadata: dict[str, Any] | None,
+) -> None:
+    now = _utc_now_iso()
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE chat_sessions
+            SET metadata_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (json.dumps(metadata or {}, ensure_ascii=False), now, session_id),
+        )
+        conn.commit()
+
+
 def set_session_title_if_missing(db_path: Path, session_id: str, title: str) -> None:
     cleaned = title.strip()
     if not cleaned:
