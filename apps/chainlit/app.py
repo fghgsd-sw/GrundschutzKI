@@ -79,6 +79,8 @@ def _load_system_prompt(path: Path) -> str | None:
 
 SYSTEM_PROMPT = _load_system_prompt(SYSTEM_PROMPT_PATH)
 CITATION_PANEL_CACHE: dict[str, str] = {}
+CITATION_SIDEBAR_TITLE = "Quellen & Belegstellen"
+CITATION_HISTORY_SIDEBAR_TITLE = "Quellen & Belegstellen (Verlauf)"
 
 
 def _allowed_source_pdf_names() -> set[str]:
@@ -1747,6 +1749,7 @@ async def _show_citation_sidebar(
     source_rows: list[dict[str, Any]],
     *,
     citation_step_id: str | None = None,
+    sidebar_title: str = CITATION_SIDEBAR_TITLE,
 ) -> None:
     elements = _build_citation_elements(
         panel_content,
@@ -1755,7 +1758,7 @@ async def _show_citation_sidebar(
     )
     if not elements:
         return
-    await cl.ElementSidebar.set_title("Quellen & Belegstellen")
+    await cl.ElementSidebar.set_title(sidebar_title)
     # Force a refresh even when the sidebar key is unchanged.
     await cl.ElementSidebar.set_elements([], key="citations_panel")
     await cl.ElementSidebar.set_elements(elements, key="citations_panel")
@@ -1975,9 +1978,22 @@ async def on_chat_resume(thread: dict[str, Any]):
             panel_with_links = _append_source_links_to_panel(restored_panel_content, citation_source_rows_for_actions)
         cl.user_session.set("citation_panel_content", panel_with_links)
         citation_panel_for_actions = panel_with_links
+
+    history_panel_content, history_rows = _build_citation_history_view(restored_citation_history)
+    if isinstance(history_panel_content, str) and history_panel_content.strip():
+        history_panel_with_links = history_panel_content
+        if "/sources/pdf/" not in history_panel_with_links:
+            history_panel_with_links = _append_source_links_to_panel(history_panel_content, history_rows)
         await _show_citation_sidebar(
-            panel_with_links,
+            history_panel_with_links,
+            history_rows,
+            sidebar_title=CITATION_HISTORY_SIDEBAR_TITLE,
+        )
+    elif isinstance(citation_panel_for_actions, str) and citation_panel_for_actions.strip():
+        await _show_citation_sidebar(
+            citation_panel_for_actions,
             [],
+            sidebar_title=CITATION_SIDEBAR_TITLE,
         )
 
     if not latest_assistant_has_actions:
@@ -2220,21 +2236,26 @@ async def open_all_citations(action: cl.Action):
     payload_panel_content = payload.get("citation_panel_content")
     payload_source_rows = payload.get("citation_source_rows")
 
-    panel_content: str | None = None
-    source_rows: list[dict[str, Any]] = []
+    latest_panel_content = (
+        payload_panel_content
+        if isinstance(payload_panel_content, str) and payload_panel_content.strip()
+        else cl.user_session.get("citation_panel_content")
+    )
+    latest_source_rows = _sanitize_source_rows_payload(payload_source_rows)
+    if not latest_source_rows:
+        latest_source_rows = _sanitize_source_rows_payload(cl.user_session.get("citation_source_rows"))
+
+    panel_content: str | None = latest_panel_content if isinstance(latest_panel_content, str) else None
+    source_rows: list[dict[str, Any]] = latest_source_rows
+    sidebar_title = CITATION_SIDEBAR_TITLE
     if show_history:
-        panel_content, source_rows = _build_citation_history_view(
+        history_panel_content, history_rows = _build_citation_history_view(
             _sanitize_citation_history(cl.user_session.get("citation_history"))
         )
-    else:
-        panel_content = (
-            payload_panel_content
-            if isinstance(payload_panel_content, str) and payload_panel_content.strip()
-            else cl.user_session.get("citation_panel_content")
-        )
-        source_rows = _sanitize_source_rows_payload(payload_source_rows)
-        if not source_rows:
-            source_rows = _sanitize_source_rows_payload(cl.user_session.get("citation_source_rows"))
+        if isinstance(history_panel_content, str) and history_panel_content.strip():
+            panel_content = history_panel_content
+            source_rows = history_rows
+            sidebar_title = CITATION_HISTORY_SIDEBAR_TITLE
 
     if not isinstance(panel_content, str) or not panel_content.strip():
         await cl.Message(content="Keine Zitierungen verfügbar.").send()
@@ -2243,12 +2264,14 @@ async def open_all_citations(action: cl.Action):
     panel_content_with_links = panel_content
     if "/sources/pdf/" not in panel_content_with_links:
         panel_content_with_links = _append_source_links_to_panel(panel_content, source_rows)
-    cl.user_session.set("citation_panel_content", panel_content)
-    cl.user_session.set("citation_source_rows", source_rows)
+    if sidebar_title == CITATION_SIDEBAR_TITLE:
+        cl.user_session.set("citation_panel_content", panel_content)
+        cl.user_session.set("citation_source_rows", source_rows)
 
     await _show_citation_sidebar(
         panel_content_with_links,
-        [],
+        source_rows,
+        sidebar_title=sidebar_title,
     )
 
 
@@ -2748,17 +2771,21 @@ async def main(message: cl.Message):
             history_panel_content, history_rows = _build_citation_history_view(
                 _sanitize_citation_history(cl.user_session.get("citation_history"))
             )
+            use_history_sidebar = isinstance(history_panel_content, str) and history_panel_content.strip()
             sidebar_content = (
                 history_panel_content
-                if isinstance(history_panel_content, str) and history_panel_content.strip()
+                if use_history_sidebar
                 else citation_panel_content
             )
-            sidebar_rows = history_rows if history_rows else source_rows_for_session
+            sidebar_rows = history_rows if use_history_sidebar else source_rows_for_session
             if "/sources/pdf/" not in sidebar_content:
                 sidebar_content = _append_source_links_to_panel(sidebar_content, sidebar_rows)
             await _show_citation_sidebar(
                 sidebar_content,
                 sidebar_rows,
+                sidebar_title=(
+                    CITATION_HISTORY_SIDEBAR_TITLE if use_history_sidebar else CITATION_SIDEBAR_TITLE
+                ),
             )
         messages.append({"role": "assistant", "content": content})
         add_chat_message(
