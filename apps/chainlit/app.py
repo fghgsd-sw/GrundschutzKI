@@ -39,6 +39,7 @@ from native_chat import (
     get_user_by_identifier,
 )
 from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve, personalized_retrieve
+from upload_handler import process_upload, search_ephemeral
 from settings import (
     CHAT_DB_PATH,
     CHAT_EXPORT_DIR,
@@ -104,7 +105,7 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "rag_retrieve",
-            "description": "Suche relevante Dokumente in der Wissensbasis.",
+            "description": "Suche relevante Dokumente in der Wissensbasis und in hochgeladenen Dokumenten.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -745,14 +746,19 @@ async def _retrieve_fused(
 
 
 def _merge_results(primary: list[Any], secondary: list[Any], max_items: int) -> list[Any]:
+    """Merge primary and secondary results, sorted by score (highest first)."""
     merged: list[Any] = []
     seen: set[tuple[str, int | None, str]] = set()
 
-    def key_for(item: Any) -> tuple[str, int | None, str]:
-        return _result_key(item)
+    # Sort all candidates by score descending so the best hits win regardless of source
+    combined = sorted(
+        [*primary, *secondary],
+        key=lambda item: float(getattr(item, "score", 0.0) or 0.0),
+        reverse=True,
+    )
 
-    for item in [*primary, *secondary]:
-        k = key_for(item)
+    for item in combined:
+        k = _result_key(item)
         if k in seen:
             continue
         seen.add(k)
@@ -1187,6 +1193,7 @@ async def on_chat_start():
         messages.append({"role": "system", "content": system_prompt})
         add_chat_message(CHAT_DB_PATH, session_id, "system", system_prompt)
     cl.user_session.set("messages", messages)
+    cl.user_session.set("ephemeral_docs", [])  # uploaded-document store (per session)
 
     # Send chat settings with profile selector
     chat_settings = _build_chat_settings(chat_profile_name)
@@ -1274,6 +1281,34 @@ async def ask_followup(action: cl.Action):
 async def main(message: cl.Message):
     if await _handle_control_message(message):
         return
+
+    # --- Handle uploaded files (ephemeral in-session RAG) ---
+    if message.elements:
+        ephemeral_docs = cl.user_session.get("ephemeral_docs") or []
+        for element in message.elements:
+            file_path = getattr(element, "path", None)
+            file_name = getattr(element, "name", None) or "upload"
+            mime = getattr(element, "mime", None)
+            if not file_path:
+                continue
+            try:
+                async def _warn(msg: str) -> None:
+                    await cl.Message(content=msg, author="System").send()
+
+                new_docs = await process_upload(file_path, file_name, mime, on_warning=_warn)
+                ephemeral_docs.extend(new_docs)
+                await cl.Message(
+                    content=f"Dokument **{file_name}** wurde verarbeitet ({len(new_docs)} Abschnitte).",
+                    author="System",
+                ).send()
+                print(f"[DEBUG] upload processed: {file_name}, chunks={len(new_docs)}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[WARN] upload_failed: {file_name}: {exc}")
+                await cl.Message(
+                    content=f"Fehler beim Verarbeiten von **{file_name}**: {exc}",
+                    author="System",
+                ).send()
+        cl.user_session.set("ephemeral_docs", ephemeral_docs)
 
     messages = cl.user_session.get("messages") or []
     session_id = _current_chat_session_id()
@@ -1391,6 +1426,21 @@ async def main(message: cl.Message):
                             balance=balance,
                             top_k=top_k,
                         )
+
+                        # --- Ephemeral uploaded-doc search (separate context) ---
+                        ephemeral_context = ""
+                        ephemeral_citations = ""
+                        ephemeral_hits = []
+                        ephemeral_docs = cl.user_session.get("ephemeral_docs") or []
+                        if ephemeral_docs:
+                            from llm import embed as _embed
+                            q_vec = (await _embed([query]))[0]
+                            ephemeral_hits = search_ephemeral(q_vec, ephemeral_docs, top_k=5)
+                            if ephemeral_hits:
+                                ephemeral_context = build_context(ephemeral_hits)
+                                ephemeral_citations = format_citations(ephemeral_hits)
+                                print(f"[DEBUG] ephemeral_hits={len(ephemeral_hits)}")
+
                         print(
                             "[DEBUG] rag_retrieve",
                             "hits=",
@@ -1399,11 +1449,19 @@ async def main(message: cl.Message):
                             len(results[0].text) if results else 0,
                             "personalized=",
                             balance < 1.0,
+                            "has_uploaded_context=",
+                            bool(ephemeral_context),
                         )
-                        step.output = {"hits": len(results), "balance": balance}
+                        step.output = {"hits": len(results), "balance": balance, "ephemeral_chunks": len(ephemeral_hits)}
 
                     context = build_context(results)
                     citations_text = format_citations(results)
+
+                    # Append uploaded-document context as a dedicated section
+                    if ephemeral_context:
+                        context += "\n\n--- Hochgeladenes Dokument ---\n" + ephemeral_context
+                        citations_text += "\n" + ephemeral_citations
+
                     tool_payload = {
                         "query": query,
                         "context": context,

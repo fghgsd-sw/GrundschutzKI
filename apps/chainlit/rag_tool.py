@@ -360,6 +360,15 @@ def format_citations(results: list[RagResult]) -> str:
     lines: list[str] = []
     for idx, result in enumerate(results, start=1):
         meta = result.metadata
+
+        # Uploaded documents get a simplified citation line.
+        if meta.get("source") == "upload":
+            upload_file = meta.get("file") or "Hochgeladenes Dokument"
+            chunk_idx = meta.get("chunk_index")
+            chunk_label = f" (Abschnitt {chunk_idx + 1})" if chunk_idx is not None else ""
+            lines.append(f"[{idx}] Hochgeladenes Dokument: {upload_file}{chunk_label}")
+            continue
+
         source = meta.get("source") or {}
         document = meta.get("document") or (source.get("document") if isinstance(source, dict) else None)
         file_name = extract_source_file(meta) or (source.get("file") if isinstance(source, dict) else None)
