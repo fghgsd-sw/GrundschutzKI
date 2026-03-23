@@ -3,7 +3,7 @@
 This module handles:
 - Extracting user interest topics from chat history via LLM
 - Computing topic embeddings for retrieval filtering
-- Dynamically determining personalization balance per query
+- Managing user keywords (auto-extracted and manual)
 - Filtering retrieval results based on user profile
 """
 
@@ -39,6 +39,9 @@ class UserProfile:
     topic_embeddings: list[list[float]] = field(default_factory=list)
     excluded_bausteine: list[str] = field(default_factory=list)
     message_count: int = 0
+    keywords: list[dict[str, Any]] = field(default_factory=list)
+    custom_prompt: str | None = None
+    personalization_enabled: bool = True
 
     def has_sufficient_history(self) -> bool:
         """Check if user has enough history for personalization."""
@@ -49,6 +52,14 @@ class UserProfile:
         if not self.topics:
             return ""
         return ", ".join(self.topics)
+
+    def active_keywords(self) -> list[dict[str, Any]]:
+        """Return only active keywords."""
+        return [k for k in self.keywords if k.get("active", True)]
+
+    def active_keyword_values(self) -> list[str]:
+        """Return values of active keywords."""
+        return [k["value"] for k in self.active_keywords() if k.get("value")]
 
 
 TOPIC_EXTRACTION_PROMPT = """Analysiere die folgenden Benutzeranfragen an einen IT-Grundschutz-Chatbot und extrahiere die Hauptthemen, für die sich der Benutzer interessiert.
@@ -67,39 +78,15 @@ Beispiel: ["Webserver-Sicherheit", "Authentifizierung", "Netzwerksegmentierung"]
 Themen:"""
 
 
-BALANCE_DETERMINATION_PROMPT = """Du bist ein System, das entscheidet, wie stark die Personalisierung bei einer RAG-Anfrage gewichtet werden soll.
-
-Benutzerrolle: {user_role}
-Benutzer-Interessen: {user_topics}
-Aktuelle Anfrage: {query}
-
-Entscheide, wie stark die Personalisierung gewichtet werden soll (Fließkommawert zwischen 0.0 und 1.0):
-
-- 1.0: Keine Personalisierung - Standard-Retrieval
-  (für allgemeine Fragen oder wenn die Anfrage NICHT zu den Interessen/der Rolle passt)
-  
-- 0.7-0.9: Geringe Personalisierung
-  (für Fragen mit schwachem Bezug zu den Interessen)
-  
-- 0.4-0.6: Ausgewogene Mischung
-  (für Fragen, die teilweise mit den Interessen oder der Rolle zusammenhängen)
-  
-- 0.1-0.3: Starke Personalisierung
-  (für Fragen mit deutlichem Bezug zu den Benutzer-Interessen)
-  
-- 0.0: Maximale Personalisierung
-  (für Fragen, die exakt die Interessen und Rolle des Benutzers betreffen)
-
-Berücksichtige auch die Rolle des Benutzers: Eine technische Anfrage sollte für "Durchführungsverantwortliche IT-Betrieb" stärker personalisiert werden als für "Institutsleitung".
-
-Antworte NUR mit einer Dezimalzahl zwischen 0.0 und 1.0, ohne weitere Erklärungen."""
+BALANCE_DETERMINATION_PROMPT = """DEPRECATED: LLM-based balance determination has been removed.
+Personalization is now controlled deterministically by the user via settings."""
 
 
 async def extract_user_topics(
     user_id: str,
     db_path: Path | None = None,
     force: bool = False,
-) -> list[str]:
+) -> tuple[list[str], list[dict[str, Any]]]:
     """Extract interest topics from user's chat history using LLM.
 
     Args:
@@ -108,7 +95,7 @@ async def extract_user_topics(
         force: Force re-extraction even if profile exists
 
     Returns:
-        List of extracted topic strings
+        Tuple of (topic strings, keyword objects with {value, active, source})
     """
     db = db_path or CHAT_DB_PATH
 
@@ -116,12 +103,16 @@ async def extract_user_topics(
     if not force:
         existing = get_user_profile(db, user_id)
         if existing and existing.get("topics"):
-            return existing["topics"]
+            # Build keyword objects from existing topics if keywords not yet populated
+            keywords = existing.get("keywords", [])
+            if not keywords:
+                keywords = [{"value": t, "active": True, "source": "auto"} for t in existing["topics"]]
+            return existing["topics"], keywords
 
     # Get user's recent messages
     messages = get_user_message_history(db, user_id, limit=100, role_filter="user")
     if not messages:
-        return []
+        return [], []
 
     # Format messages for prompt
     message_texts = "\n".join(
@@ -151,11 +142,13 @@ async def extract_user_topics(
 
         topics = json.loads(content)
         if isinstance(topics, list):
-            return [str(t).strip() for t in topics if t][:PROFILE_TOPIC_LIMIT]
+            topic_strings = [str(t).strip() for t in topics if t][:PROFILE_TOPIC_LIMIT]
+            keywords = [{"value": t, "active": True, "source": "auto"} for t in topic_strings]
+            return topic_strings, keywords
     except (json.JSONDecodeError, IndexError, KeyError, AttributeError) as e:
         print(f"[WARN] topic_extraction_failed: {e}")
 
-    return []
+    return [], []
 
 
 async def update_user_profile(
@@ -191,16 +184,25 @@ async def update_user_profile(
                 topic_embeddings=existing.get("topic_embeddings", []),
                 excluded_bausteine=existing.get("excluded_bausteine", []),
                 message_count=existing_count,
+                keywords=existing.get("keywords", []),
+                custom_prompt=existing.get("custom_prompt"),
+                personalization_enabled=existing.get("personalization_enabled", True),
             )
 
     # Extract topics via LLM
-    topics = await extract_user_topics(user_id, db, force=True)
+    topics, auto_keywords = await extract_user_topics(user_id, db, force=True)
 
-    # Embed topics for similarity matching
+    # Merge: keep manual keywords, replace auto keywords
+    existing_keywords = existing.get("keywords", []) if existing else []
+    manual_keywords = [k for k in existing_keywords if k.get("source") == "manual"]
+    merged_keywords = manual_keywords + auto_keywords
+
+    # Embed all active keyword values for similarity matching
+    active_values = [k["value"] for k in merged_keywords if k.get("active", True) and k.get("value")]
     topic_embeddings: list[list[float]] = []
-    if topics:
+    if active_values:
         try:
-            topic_embeddings = await embed(topics)
+            topic_embeddings = await embed(active_values)
         except (ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
             print(f"[WARN] topic_embedding_failed: {e}")
 
@@ -211,6 +213,7 @@ async def update_user_profile(
         topics=topics,
         topic_embeddings=topic_embeddings,
         message_count=message_count,
+        keywords=merged_keywords,
     )
 
     return UserProfile(
@@ -219,6 +222,9 @@ async def update_user_profile(
         topic_embeddings=topic_embeddings,
         excluded_bausteine=existing.get("excluded_bausteine", []) if existing else [],
         message_count=message_count,
+        keywords=merged_keywords,
+        custom_prompt=existing.get("custom_prompt") if existing else None,
+        personalization_enabled=existing.get("personalization_enabled", True) if existing else True,
     )
 
 
@@ -235,9 +241,6 @@ async def load_user_profile(
     Returns:
         UserProfile instance or None if not found
     """
-    if not PERSONALIZATION_ENABLED:
-        return None
-
     db = db_path or CHAT_DB_PATH
     data = get_user_profile(db, user_id)
 
@@ -250,6 +253,9 @@ async def load_user_profile(
         topic_embeddings=data.get("topic_embeddings", []),
         excluded_bausteine=data.get("excluded_bausteine", []),
         message_count=data.get("message_count", 0),
+        keywords=data.get("keywords", []),
+        custom_prompt=data.get("custom_prompt"),
+        personalization_enabled=data.get("personalization_enabled", True),
     )
 
 
@@ -258,47 +264,84 @@ async def determine_balance(
     user_profile: UserProfile | None,
     user_role: str = "",
 ) -> float:
-    """Dynamically determine personalization balance for a query.
+    """Determine personalization balance for a query.
 
-    Uses LLM to decide how strongly to weight personalization based on
-    whether the query relates to user's known interests and role.
-
-    Args:
-        query: The user's current query
-        user_profile: User's profile with extracted topics
-        user_role: The user's selected chat profile/role
-
-    Returns:
-        Balance value between 0.0 (full personalization) and 1.0 (no personalization)
+    Now deterministic: returns 1.0 (no personalization / no chunk filtering).
+    Keywords are only used for the 'Bezug zu Ihren Interessen' section
+    in the system prompt, not for retrieval filtering.
     """
-    # No personalization without profile or topics
-    if not user_profile or not user_profile.topics:
-        return 1.0
+    return 1.0
 
-    # Not enough history for personalization
-    if not user_profile.has_sufficient_history():
-        return 1.0
 
-    prompt = BALANCE_DETERMINATION_PROMPT.format(
-        user_role=user_role or "Nicht angegeben",
-        user_topics=", ".join(user_profile.topics),
-        query=query,
+async def regenerate_keywords(
+    user_id: str,
+    db_path: Path | None = None,
+) -> UserProfile:
+    """Regenerate auto-extracted keywords from chat history.
+
+    Overwrites only source='auto' keywords; manual keywords are preserved.
+    """
+    db = db_path or CHAT_DB_PATH
+    existing = get_user_profile(db, user_id)
+    existing_keywords = existing.get("keywords", []) if existing else []
+    manual_keywords = [k for k in existing_keywords if k.get("source") == "manual"]
+
+    # Extract fresh topics from history
+    topics, auto_keywords = await extract_user_topics(user_id, db, force=True)
+    merged_keywords = manual_keywords + auto_keywords
+
+    # Embed all active keyword values
+    active_values = [k["value"] for k in merged_keywords if k.get("active", True) and k.get("value")]
+    topic_embeddings: list[list[float]] = []
+    if active_values:
+        try:
+            topic_embeddings = await embed(active_values)
+        except (ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
+            print(f"[WARN] keyword_embedding_failed: {e}")
+
+    message_count = get_user_message_count(db, user_id)
+    upsert_user_profile(
+        db, user_id,
+        topics=topics,
+        topic_embeddings=topic_embeddings,
+        keywords=merged_keywords,
+        message_count=message_count,
     )
 
-    try:
-        response = await chat(
-            messages=[{"role": "user", "content": prompt}],
-            tools=None,
-        )
-        content = response.choices[0].message.content or ""  # type: ignore[union-attr]
-        content = content.strip()
+    return UserProfile(
+        user_id=user_id,
+        topics=topics,
+        topic_embeddings=topic_embeddings,
+        excluded_bausteine=existing.get("excluded_bausteine", []) if existing else [],
+        message_count=message_count,
+        keywords=merged_keywords,
+        custom_prompt=existing.get("custom_prompt") if existing else None,
+        personalization_enabled=existing.get("personalization_enabled", True) if existing else True,
+    )
 
-        # Parse balance value
-        balance = float(content)
-        return max(0.0, min(1.0, balance))  # Clamp to [0, 1]
-    except (ValueError, IndexError, KeyError, AttributeError) as e:
-        print(f"[WARN] balance_determination_failed: {e}")
-        return 1.0  # Default to no personalization on error
+
+async def update_keyword_embeddings(user_profile: UserProfile, db_path: Path | None = None) -> UserProfile:
+    """Re-embed active keywords and persist. Call after keyword changes."""
+    db = db_path or CHAT_DB_PATH
+    active_values = user_profile.active_keyword_values()
+    topic_embeddings: list[list[float]] = []
+    if active_values:
+        try:
+            topic_embeddings = await embed(active_values)
+        except (ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
+            print(f"[WARN] keyword_embedding_failed: {e}")
+
+    user_profile.topic_embeddings = topic_embeddings
+    user_profile.topics = active_values
+
+    upsert_user_profile(
+        db,
+        user_profile.user_id,
+        topics=active_values,
+        topic_embeddings=topic_embeddings,
+        keywords=user_profile.keywords,
+    )
+    return user_profile
 
 
 def compute_similarity(vec_a: list[float], vec_b: list[float]) -> float:

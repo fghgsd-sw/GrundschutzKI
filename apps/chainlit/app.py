@@ -14,7 +14,7 @@ import asyncpg
 import bcrypt
 import chainlit as cl
 from chainlit.auth import get_current_user
-from chainlit.input_widget import Select
+from chainlit.input_widget import Select, Switch, Tags
 from chainlit.types import Starter
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -34,6 +34,7 @@ from chat_history import (
     set_session_title_if_missing,
     set_user_selected_chat_profile,
     update_chat_session_metadata,
+    upsert_user_profile,
 )
 from llm import chat, message_to_dict
 from native_chat import (
@@ -43,7 +44,7 @@ from native_chat import (
     export_all_chats_zip,
     get_user_by_identifier,
 )
-from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve, personalized_retrieve
+from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve
 from settings import (
     CHAT_DB_PATH,
     CHAT_EXPORT_DIR,
@@ -55,7 +56,6 @@ from settings import (
     EMBED_MODEL,
     MAX_TOP_K,
     MAX_SOURCE_LINKS,
-    PERSONALIZATION_ENABLED,
     PERSONALIZED_FOLLOWUPS_COUNT,
     PROFILE_MIN_MESSAGES,
     STARTER_QUESTIONS,
@@ -63,8 +63,9 @@ from settings import (
     TOP_K,
 )
 from user_profile import (
-    determine_balance,
     load_user_profile,
+    regenerate_keywords,
+    update_keyword_embeddings,
     update_user_profile,
     UserProfile,
 )
@@ -250,11 +251,19 @@ def _truncate(text: str, max_len: int = 120) -> str:
 
 
 def _build_personalization_prompt(user_profile: UserProfile) -> str:
-    """Build personalization context for the system prompt."""
-    if not user_profile or not user_profile.topics:
+    """Build personalization context for the system prompt.
+
+    Keywords are used only for the 'Bezug zu Ihren Interessen' section —
+    they do NOT influence retrieval or chunk filtering.
+    """
+    if not user_profile or not user_profile.personalization_enabled:
         return ""
 
-    topics_str = ", ".join(user_profile.topics)
+    active_kws = user_profile.active_keyword_values()
+    if not active_kws:
+        return ""
+
+    topics_str = ", ".join(active_kws)
     personalized_followups = PERSONALIZED_FOLLOWUPS_COUNT
 
     return f"""## PERSONALISIERTER KONTEXT
@@ -589,9 +598,165 @@ async def _handle_control_message(message: cl.Message) -> bool:
                 "- `/history <session_id>` zeigt die letzten Nachrichten einer Session\n"
                 "- `/export` exportiert den aktuellen Chat im OpenAI-Format (JSON)\n"
                 "- `/export <session_id>` exportiert eine bestimmte Session im OpenAI-Format (JSON)\n"
-                "- `/export all` exportiert alle Chats im OpenAI-Format (JSONL)"
+                "- `/export all` exportiert alle Chats im OpenAI-Format (JSONL)\n"
+                "- `/keywords` zeigt aktuelle Schlüsselwörter\n"
+                "- `/keywords add <wort>` fügt ein manuelles Schlüsselwort hinzu\n"
+                "- `/keywords remove <wort>` entfernt ein Schlüsselwort\n"
+                "- `/keywords enable-all` aktiviert alle Schlüsselwörter\n"
+                "- `/keywords disable-all` deaktiviert alle Schlüsselwörter\n"
+                "- `/keywords regenerate` generiert Schlüsselwörter aus dem Chatverlauf neu\n"
+                "- `/prompt show` zeigt den aktuellen System-Prompt\n"
+                "- `/prompt reset` setzt den Prompt auf den Standard zurück\n"
+                "- `/prompt set <text>` setzt einen benutzerdefinierten System-Prompt"
             )
         ).send()
+        return True
+
+    # --- Keyword management commands ---
+    if cmd == "/keywords":
+        user_profile: UserProfile | None = cl.user_session.get("user_profile")
+        user_id = cl.user_session.get("current_user_id")
+
+        if not arg:
+            # Show current keywords
+            if not user_profile or not user_profile.keywords:
+                await cl.Message(content="Keine Schlüsselwörter vorhanden. Schreiben Sie mehr Nachrichten oder nutzen Sie `/keywords add <wort>`.").send()
+                return True
+            lines = []
+            for kw in user_profile.keywords:
+                status = "✅" if kw.get("active", True) else "❌"
+                source = "auto" if kw.get("source") == "auto" else "manuell"
+                lines.append(f"- {status} **{kw['value']}** ({source})")
+            enabled = "aktiviert" if user_profile.personalization_enabled else "deaktiviert"
+            header = f"**Schlüsselwörter** (Personalisierung: {enabled}):\n\n"
+            await cl.Message(content=header + "\n".join(lines)).send()
+            return True
+
+        sub_parts = arg.split(maxsplit=1)
+        sub_cmd = sub_parts[0].lower()
+        sub_arg = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+
+        if sub_cmd == "add" and sub_arg:
+            if not user_profile:
+                user_profile = UserProfile(user_id=user_id or "anonymous")
+            # Check for duplicates
+            existing_values = {k["value"].lower() for k in user_profile.keywords}
+            if sub_arg.lower() in existing_values:
+                # Reactivate if deactivated
+                for kw in user_profile.keywords:
+                    if kw["value"].lower() == sub_arg.lower():
+                        kw["active"] = True
+                await cl.Message(content=f"Schlüsselwort **{sub_arg}** aktiviert.").send()
+            else:
+                user_profile.keywords.append({"value": sub_arg, "active": True, "source": "manual"})
+                await cl.Message(content=f"Schlüsselwort **{sub_arg}** hinzugefügt.").send()
+            user_profile = await update_keyword_embeddings(user_profile)
+            cl.user_session.set("user_profile", user_profile)
+            _rebuild_system_prompt_in_session()
+            return True
+
+        if sub_cmd == "remove" and sub_arg:
+            if user_profile:
+                target = sub_arg.lower()
+                removed = False
+                for kw in user_profile.keywords:
+                    if kw["value"].lower() == target:
+                        if kw.get("source") == "manual":
+                            user_profile.keywords.remove(kw)
+                        else:
+                            kw["active"] = False
+                        removed = True
+                        break
+                if removed:
+                    user_profile = await update_keyword_embeddings(user_profile)
+                    cl.user_session.set("user_profile", user_profile)
+                    _rebuild_system_prompt_in_session()
+                    await cl.Message(content=f"Schlüsselwort **{sub_arg}** entfernt.").send()
+                else:
+                    await cl.Message(content=f"Schlüsselwort **{sub_arg}** nicht gefunden.").send()
+            return True
+
+        if sub_cmd == "enable-all":
+            if user_profile:
+                for kw in user_profile.keywords:
+                    kw["active"] = True
+                user_profile = await update_keyword_embeddings(user_profile)
+                cl.user_session.set("user_profile", user_profile)
+                _rebuild_system_prompt_in_session()
+                await cl.Message(content="Alle Schlüsselwörter aktiviert.").send()
+            return True
+
+        if sub_cmd == "disable-all":
+            if user_profile:
+                for kw in user_profile.keywords:
+                    kw["active"] = False
+                user_profile = await update_keyword_embeddings(user_profile)
+                cl.user_session.set("user_profile", user_profile)
+                _rebuild_system_prompt_in_session()
+                await cl.Message(content="Alle Schlüsselwörter deaktiviert.").send()
+            return True
+
+        if sub_cmd == "regenerate":
+            if not user_id:
+                await cl.Message(content="Anmeldung erforderlich.").send()
+                return True
+            await cl.Message(content="Schlüsselwörter werden neu generiert...").send()
+            user_profile = await regenerate_keywords(user_id)
+            cl.user_session.set("user_profile", user_profile)
+            _rebuild_system_prompt_in_session()
+            active = user_profile.active_keyword_values()
+            if active:
+                await cl.Message(content=f"Neue Schlüsselwörter: {', '.join(active)}").send()
+            else:
+                await cl.Message(content="Keine Schlüsselwörter extrahiert. Schreiben Sie mehr Nachrichten.").send()
+            return True
+
+        await cl.Message(content="Unbekannter Unterbefehl. Nutze `/help` für Hilfe.").send()
+        return True
+
+    # --- Prompt management commands ---
+    if cmd == "/prompt":
+        user_profile: UserProfile | None = cl.user_session.get("user_profile")
+        user_id = cl.user_session.get("current_user_id")
+
+        sub_parts = arg.split(maxsplit=1) if arg else ["show"]
+        sub_cmd = sub_parts[0].lower()
+        sub_arg = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+
+        if sub_cmd == "show":
+            messages = cl.user_session.get("messages") or []
+            current_prompt = ""
+            if messages and messages[0].get("role") == "system":
+                current_prompt = messages[0]["content"]
+            if not current_prompt:
+                current_prompt = SYSTEM_PROMPT or "(kein System-Prompt)"
+            is_custom = user_profile and user_profile.custom_prompt
+            label = "**Benutzerdefinierter Prompt:**" if is_custom else "**Standard-Prompt:**"
+            await cl.Message(content=f"{label}\n\n```\n{current_prompt}\n```").send()
+            return True
+
+        if sub_cmd == "reset":
+            if user_profile:
+                user_profile.custom_prompt = None
+                cl.user_session.set("user_profile", user_profile)
+            if user_id:
+                upsert_user_profile(CHAT_DB_PATH, user_id, custom_prompt=None)
+            _rebuild_system_prompt_in_session()
+            await cl.Message(content="System-Prompt auf Standard zurückgesetzt.").send()
+            return True
+
+        if sub_cmd == "set" and sub_arg:
+            if not user_profile:
+                user_profile = UserProfile(user_id=user_id or "anonymous")
+            user_profile.custom_prompt = sub_arg
+            cl.user_session.set("user_profile", user_profile)
+            if user_id:
+                upsert_user_profile(CHAT_DB_PATH, user_id, custom_prompt=sub_arg)
+            _rebuild_system_prompt_in_session()
+            await cl.Message(content="System-Prompt aktualisiert.").send()
+            return True
+
+        await cl.Message(content="Nutze `/prompt show`, `/prompt reset` oder `/prompt set <text>`.").send()
         return True
 
     return False
@@ -2016,79 +2181,177 @@ async def set_chat_profiles():
     return []
 
 
-def _build_chat_settings(current_profile: str | None = None):
-    """Build ChatSettings with profile selector."""
+def _build_full_system_prompt(
+    chat_profile_config: dict[str, Any] | None = None,
+    user_profile: UserProfile | None = None,
+) -> str | None:
+    """Build the complete system prompt from base + role context + personalization.
+
+    Uses user's custom_prompt if set, otherwise falls back to the default.
+    """
+    # Start with custom prompt or default
+    base = None
+    if user_profile and user_profile.custom_prompt:
+        base = user_profile.custom_prompt
+    else:
+        base = SYSTEM_PROMPT
+
+    if not base:
+        return None
+
+    system_prompt = base
+
+    # Add chat profile / role context
+    if chat_profile_config:
+        profile_prompt = chat_profile_config.get("prompt_context", "")
+        if profile_prompt:
+            system_prompt = f"{system_prompt}\n\n## ROLLENKONTEXT\n{profile_prompt}"
+
+    # Add personalization context (keywords for "Bezug zu Ihren Interessen")
+    if user_profile:
+        personalization_context = _build_personalization_prompt(user_profile)
+        if personalization_context:
+            system_prompt = f"{system_prompt}\n\n{personalization_context}"
+
+    return system_prompt
+
+
+def _rebuild_system_prompt_in_session() -> None:
+    """Rebuild the system prompt from current session state and update messages."""
+    chat_profile_config = cl.user_session.get("chat_profile_config")
+    user_profile = cl.user_session.get("user_profile")
+    system_prompt = _build_full_system_prompt(chat_profile_config, user_profile)
+
+    messages = cl.user_session.get("messages") or []
+    if messages and messages[0].get("role") == "system":
+        messages[0]["content"] = system_prompt or ""
+    elif system_prompt:
+        messages.insert(0, {"role": "system", "content": system_prompt})
+    cl.user_session.set("messages", messages)
+
+
+def _build_chat_settings(
+    current_profile: str | None = None,
+    user_profile: UserProfile | None = None,
+):
+    """Build ChatSettings with profile selector, personalization toggle, and keyword tags."""
     profiles = CHAT_PROFILES_CONFIG.get("profiles", [])
     profile_names = [p.get("name", "") for p in profiles if p.get("name")]
-    
+
     if not profile_names:
         return None
-    
+
     # Find current profile index
     initial_index = 0
     if current_profile and current_profile in profile_names:
         initial_index = profile_names.index(current_profile)
-    
-    return cl.ChatSettings(
-        [
-            Select(
-                id="chat_profile",
-                label="Ihre Rolle",
-                description="Wählen Sie Ihre Rolle für angepasste Antworten",
-                values=profile_names,
-                initial_index=initial_index,
-            ),
-        ]
-    )
+
+    # Determine personalization state and keywords from profile
+    personalization_on = True
+    active_kw_values: list[str] = []
+    if user_profile:
+        personalization_on = user_profile.personalization_enabled
+        active_kw_values = user_profile.active_keyword_values()
+
+    widgets: list = [
+        Select(
+            id="chat_profile",
+            label="Ihre Rolle",
+            description="Wählen Sie Ihre Rolle für angepasste Antworten",
+            values=profile_names,
+            initial_index=initial_index,
+        ),
+        Switch(
+            id="personalization_enabled",
+            label="Personalisierung aktivieren",
+            description="Schlüsselwörter aus dem Chatverlauf in Antworten berücksichtigen",
+            initial=personalization_on,
+        ),
+        Tags(
+            id="active_keywords",
+            label="Schlüsselwörter",
+            description="Themen aus Ihrem Chatverlauf. Entfernen oder hinzufügen.",
+            initial=active_kw_values,
+        ),
+    ]
+
+    return cl.ChatSettings(widgets)
 
 
 @cl.on_settings_update
 async def on_settings_update(settings: dict[str, Any]):
-    """Handle profile changes in settings."""
-    new_profile_name = settings.get("chat_profile")
-    if not new_profile_name:
-        return
-    
-    # Get user ID
+    """Handle changes in settings: profile, personalization toggle, keywords."""
     user_id = cl.user_session.get("current_user_id")
-    
-    # Persist the selection
-    if user_id:
-        set_user_selected_chat_profile(CHAT_DB_PATH, user_id, new_profile_name)
-        print(f"[DEBUG] on_settings_update: persisted chat_profile={new_profile_name} for user={user_id}")
-    
-    # Update session
-    chat_profile_config = _get_profile_by_name(new_profile_name)
-    cl.user_session.set("chat_profile", new_profile_name)
-    cl.user_session.set("chat_profile_config", chat_profile_config)
-    
-    # Rebuild system prompt with new profile
-    system_prompt = SYSTEM_PROMPT
-    
-    if system_prompt and chat_profile_config:
-        profile_prompt = chat_profile_config.get("prompt_context", "")
-        if profile_prompt:
-            system_prompt = f"{system_prompt}\n\n## ROLLENKONTEXT\n{profile_prompt}"
-    
-    # Add personalization context if available
-    user_profile = cl.user_session.get("user_profile")
-    if system_prompt and user_profile and user_profile.topics:
-        personalization_context = _build_personalization_prompt(user_profile)
-        system_prompt = f"{system_prompt}\n\n{personalization_context}"
-    
-    # Update messages with new system prompt
-    messages = cl.user_session.get("messages") or []
-    if messages and messages[0].get("role") == "system":
-        messages[0]["content"] = system_prompt
-    elif system_prompt:
-        messages.insert(0, {"role": "system", "content": system_prompt})
-    cl.user_session.set("messages", messages)
-    
-    # Show confirmation
-    await cl.Message(
-        content=f"Ihre Rolle wurde geändert zu: **{new_profile_name}**. Zukünftige Antworten werden entsprechend angepasst.",
-        author="System",
-    ).send()
+    user_profile: UserProfile | None = cl.user_session.get("user_profile")
+    changed_parts: list[str] = []
+
+    # --- Handle chat profile change ---
+    new_profile_name = settings.get("chat_profile")
+    if new_profile_name:
+        old_profile = cl.user_session.get("chat_profile")
+        if new_profile_name != old_profile:
+            if user_id:
+                set_user_selected_chat_profile(CHAT_DB_PATH, user_id, new_profile_name)
+            chat_profile_config = _get_profile_by_name(new_profile_name)
+            cl.user_session.set("chat_profile", new_profile_name)
+            cl.user_session.set("chat_profile_config", chat_profile_config)
+            changed_parts.append(f"Rolle → **{new_profile_name}**")
+
+    # --- Handle personalization toggle ---
+    if "personalization_enabled" in settings:
+        new_enabled = bool(settings["personalization_enabled"])
+        if user_profile:
+            user_profile.personalization_enabled = new_enabled
+        else:
+            user_profile = UserProfile(
+                user_id=user_id or "anonymous",
+                personalization_enabled=new_enabled,
+            )
+        cl.user_session.set("user_profile", user_profile)
+        if user_id:
+            upsert_user_profile(CHAT_DB_PATH, user_id, personalization_enabled=new_enabled)
+        label = "aktiviert" if new_enabled else "deaktiviert"
+        changed_parts.append(f"Personalisierung → **{label}**")
+
+    # --- Handle keyword tags changes ---
+    if "active_keywords" in settings:
+        new_tag_values: list[str] = settings.get("active_keywords") or []
+        if user_profile is None:
+            user_profile = UserProfile(user_id=user_id or "anonymous")
+
+        # Determine what changed
+        old_active = set(user_profile.active_keyword_values())
+        new_active = set(new_tag_values)
+
+        # Tags added → create manual keywords
+        added = new_active - old_active
+        for value in added:
+            user_profile.keywords.append({"value": value, "active": True, "source": "manual"})
+
+        # Tags removed → deactivate
+        removed = old_active - new_active
+        for kw in user_profile.keywords:
+            if kw.get("value") in removed:
+                kw["active"] = False
+
+        # Re-embed if changes occurred
+        if added or removed:
+            user_profile = await update_keyword_embeddings(user_profile)
+            cl.user_session.set("user_profile", user_profile)
+            if added:
+                changed_parts.append(f"Schlüsselwörter hinzugefügt: {', '.join(added)}")
+            if removed:
+                changed_parts.append(f"Schlüsselwörter deaktiviert: {', '.join(removed)}")
+
+    # Rebuild system prompt with all changes
+    _rebuild_system_prompt_in_session()
+
+    if changed_parts:
+        summary = "\n".join(f"- {p}" for p in changed_parts)
+        await cl.Message(
+            content=f"Einstellungen aktualisiert:\n{summary}",
+            author="System",
+        ).send()
 
 
 @cl.on_chat_start
@@ -2146,7 +2409,7 @@ async def on_chat_start():
 
     # Load or initialize user profile for personalization
     user_profile: UserProfile | None = None
-    if PERSONALIZATION_ENABLED and user_id:
+    if user_id:
         user_profile = await load_user_profile(user_id)
         if user_profile and user_profile.has_sufficient_history():
             print(f"[DEBUG] on_chat_start: loaded profile for {user_id}, topics={user_profile.topics}")
@@ -2159,18 +2422,7 @@ async def on_chat_start():
     cl.user_session.set("user_profile", user_profile)
 
     # Build system prompt with chat profile context and personalization
-    system_prompt = SYSTEM_PROMPT
-
-    # Add chat profile context if selected
-    if system_prompt and chat_profile_config:
-        profile_prompt = chat_profile_config.get("prompt_context", "")
-        if profile_prompt:
-            system_prompt = f"{system_prompt}\n\n## ROLLENKONTEXT\n{profile_prompt}"
-
-    # Add personalization context if available
-    if system_prompt and user_profile and user_profile.topics:
-        personalization_context = _build_personalization_prompt(user_profile)
-        system_prompt = f"{system_prompt}\n\n{personalization_context}"
+    system_prompt = _build_full_system_prompt(chat_profile_config, user_profile)
 
     existing_messages = cl.user_session.get("messages")
     messages: list[dict[str, Any]]
@@ -2188,8 +2440,8 @@ async def on_chat_start():
             add_chat_message(CHAT_DB_PATH, session_id, "system", system_prompt)
     cl.user_session.set("messages", messages)
 
-    # Send chat settings with profile selector
-    chat_settings = _build_chat_settings(chat_profile_name)
+    # Send chat settings with profile selector, personalization toggle, and keywords
+    chat_settings = _build_chat_settings(chat_profile_name, user_profile)
     if chat_settings:
         await chat_settings.send()
 
@@ -2387,23 +2639,11 @@ async def main(message: cl.Message):
                         step.output = {"hits": len(results), "cached": True}
                 else:
                     with cl.Step(name="rag_retrieve", type="tool") as step:
-                        # Get user profile for personalized retrieval
-                        user_profile = cl.user_session.get("user_profile")
-                        chat_profile_name = cl.user_session.get("chat_profile") or ""
-                        balance = 1.0  # Default: no personalization
+                        step.input = {"query": query, "top_k": top_k}
 
-                        if PERSONALIZATION_ENABLED and user_profile:
-                            # Dynamically determine balance based on query relevance to user interests
-                            balance = await determine_balance(query, user_profile, user_role=chat_profile_name)
-                            step.input = {"query": query, "top_k": top_k, "personalized": True, "balance": balance}
-                        else:
-                            step.input = {"query": query, "top_k": top_k}
-
-                        # Use personalized retrieval if profile available
-                        results = await personalized_retrieve(
+                        # Standard retrieval (no personalization filtering on chunks)
+                        results = await retrieve(
                             query=query,
-                            user_profile=user_profile,
-                            balance=balance,
                             top_k=top_k,
                         )
                         print(
@@ -2412,10 +2652,8 @@ async def main(message: cl.Message):
                             len(results),
                             "first_text_len=",
                             len(results[0].text) if results else 0,
-                            "personalized=",
-                            balance < 1.0,
                         )
-                        step.output = {"hits": len(results), "balance": balance}
+                        step.output = {"hits": len(results)}
 
                     context = build_context(results)
                     citations_text = format_citations(results)
@@ -2823,18 +3061,18 @@ async def main(message: cl.Message):
     cl.user_session.set("messages", messages)
 
     # Trigger background profile update if enough messages accumulated
-    if PERSONALIZATION_ENABLED:
-        user_id = cl.user_session.get("current_user_id")
-        if user_id:
-            try:
-                current_profile = cl.user_session.get("user_profile")
-                current_count = get_user_message_count(CHAT_DB_PATH, user_id)
-                profile_count = current_profile.message_count if current_profile else 0
+    user_id = cl.user_session.get("current_user_id")
+    if user_id:
+        try:
+            current_profile = cl.user_session.get("user_profile")
+            current_count = get_user_message_count(CHAT_DB_PATH, user_id)
+            profile_count = current_profile.message_count if current_profile else 0
 
-                # Update profile if 10+ new messages since last update
-                if current_count >= PROFILE_MIN_MESSAGES and current_count - profile_count >= 10:
-                    print(f"[DEBUG] triggering profile update for {user_id}, new_messages={current_count - profile_count}")
-                    updated_profile = await update_user_profile(user_id)
-                    cl.user_session.set("user_profile", updated_profile)
-            except Exception as e:
-                print(f"[WARN] profile_update_failed for user_id={user_id}: {e.__class__.__name__}: {e}")
+            # Update profile if 10+ new messages since last update
+            if current_count >= PROFILE_MIN_MESSAGES and current_count - profile_count >= 10:
+                print(f"[DEBUG] triggering profile update for {user_id}, new_messages={current_count - profile_count}")
+                updated_profile = await update_user_profile(user_id)
+                cl.user_session.set("user_profile", updated_profile)
+                _rebuild_system_prompt_in_session()
+        except Exception as e:
+            print(f"[WARN] profile_update_failed for user_id={user_id}: {e.__class__.__name__}: {e}")

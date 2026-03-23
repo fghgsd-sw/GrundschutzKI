@@ -10,6 +10,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Sentinel to distinguish "not provided" from None for custom_prompt
+_SENTINEL = object()
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -64,12 +67,24 @@ def init_chat_db(db_path: Path) -> None:
             ON chat_sessions(user_id);
             """
         )
-        # Migration: add selected_chat_profile column if it doesn't exist
+        # Migration: add columns if they don't exist
         cursor = conn.execute("PRAGMA table_info(user_profiles)")
         columns = [row[1] for row in cursor.fetchall()]
         if "selected_chat_profile" not in columns:
             conn.execute(
                 "ALTER TABLE user_profiles ADD COLUMN selected_chat_profile TEXT"
+            )
+        if "keywords_json" not in columns:
+            conn.execute(
+                "ALTER TABLE user_profiles ADD COLUMN keywords_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "custom_prompt" not in columns:
+            conn.execute(
+                "ALTER TABLE user_profiles ADD COLUMN custom_prompt TEXT DEFAULT NULL"
+            )
+        if "personalization_enabled" not in columns:
+            conn.execute(
+                "ALTER TABLE user_profiles ADD COLUMN personalization_enabled INTEGER NOT NULL DEFAULT 1"
             )
         conn.commit()
 
@@ -344,7 +359,8 @@ def get_user_profile(db_path: Path, user_id: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT user_id, topics_json, topic_embeddings_json, excluded_bausteine_json,
-                   message_count, created_at, updated_at
+                   message_count, keywords_json, custom_prompt, personalization_enabled,
+                   created_at, updated_at
             FROM user_profiles
             WHERE user_id = ?
             """,
@@ -353,13 +369,15 @@ def get_user_profile(db_path: Path, user_id: str) -> dict[str, Any] | None:
     if not row:
         return None
     item = dict(row)
-    for field in ("topics_json", "topic_embeddings_json", "excluded_bausteine_json"):
+    for field in ("topics_json", "topic_embeddings_json", "excluded_bausteine_json", "keywords_json"):
         raw = item.get(field, "[]")
         try:
             item[field.replace("_json", "")] = json.loads(raw) if isinstance(raw, str) else []
         except json.JSONDecodeError:
             item[field.replace("_json", "")] = []
         item.pop(field, None)
+    # Convert personalization_enabled from integer to bool
+    item["personalization_enabled"] = bool(item.get("personalization_enabled", 1))
     return item
 
 
@@ -372,6 +390,9 @@ def upsert_user_profile(
     excluded_bausteine: list[str] | None = None,
     selected_chat_profile: str | None = None,
     message_count: int | None = None,
+    keywords: list[dict[str, Any]] | None = None,
+    custom_prompt: str | None = _SENTINEL,
+    personalization_enabled: bool | None = None,
 ) -> None:
     """Create or update user profile with extracted topics and embeddings."""
     now = _utc_now_iso()
@@ -398,6 +419,15 @@ def upsert_user_profile(
             if message_count is not None:
                 updates.append("message_count = ?")
                 params.append(message_count)
+            if keywords is not None:
+                updates.append("keywords_json = ?")
+                params.append(json.dumps(keywords, ensure_ascii=False))
+            if custom_prompt is not _SENTINEL:
+                updates.append("custom_prompt = ?")
+                params.append(custom_prompt)
+            if personalization_enabled is not None:
+                updates.append("personalization_enabled = ?")
+                params.append(1 if personalization_enabled else 0)
             params.append(user_id)
             conn.execute(
                 f"UPDATE user_profiles SET {', '.join(updates)} WHERE user_id = ?",
@@ -407,8 +437,10 @@ def upsert_user_profile(
             conn.execute(
                 """
                 INSERT INTO user_profiles (user_id, topics_json, topic_embeddings_json,
-                    excluded_bausteine_json, selected_chat_profile, message_count, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    excluded_bausteine_json, selected_chat_profile, message_count,
+                    keywords_json, custom_prompt, personalization_enabled,
+                    created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -417,6 +449,9 @@ def upsert_user_profile(
                     json.dumps(excluded_bausteine or [], ensure_ascii=False),
                     selected_chat_profile,
                     message_count or 0,
+                    json.dumps(keywords or [], ensure_ascii=False),
+                    custom_prompt if custom_prompt is not _SENTINEL else None,
+                    1 if personalization_enabled is None or personalization_enabled else 0,
                     now,
                     now,
                 ),
