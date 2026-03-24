@@ -247,13 +247,22 @@ async def load_user_profile(
     if not data:
         return None
 
+    topics = data.get("topics", [])
+    keywords = data.get("keywords", [])
+
+    # Migrate: if keywords column is empty but legacy topics exist,
+    # synthesise keyword objects so the Tags widget and personalization
+    # prompt have data immediately (without an LLM round-trip).
+    if not keywords and topics:
+        keywords = [{"value": t, "active": True, "source": "auto"} for t in topics]
+
     return UserProfile(
         user_id=user_id,
-        topics=data.get("topics", []),
+        topics=topics,
         topic_embeddings=data.get("topic_embeddings", []),
         excluded_bausteine=data.get("excluded_bausteine", []),
         message_count=data.get("message_count", 0),
-        keywords=data.get("keywords", []),
+        keywords=keywords,
         custom_prompt=data.get("custom_prompt"),
         personalization_enabled=data.get("personalization_enabled", True),
     )

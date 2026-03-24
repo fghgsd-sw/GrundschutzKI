@@ -14,7 +14,7 @@ import asyncpg
 import bcrypt
 import chainlit as cl
 from chainlit.auth import get_current_user
-from chainlit.input_widget import Select, Switch, Tags
+from chainlit.input_widget import Select, Switch, Tags, TextInput
 from chainlit.types import Starter
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -2233,6 +2233,7 @@ def _rebuild_system_prompt_in_session() -> None:
 def _build_chat_settings(
     current_profile: str | None = None,
     user_profile: UserProfile | None = None,
+    chat_profile_config: dict[str, Any] | None = None,
 ):
     """Build ChatSettings with profile selector, personalization toggle, and keyword tags."""
     profiles = CHAT_PROFILES_CONFIG.get("profiles", [])
@@ -2246,12 +2247,23 @@ def _build_chat_settings(
     if current_profile and current_profile in profile_names:
         initial_index = profile_names.index(current_profile)
 
+    # Resolve profile config if not passed
+    if chat_profile_config is None and current_profile:
+        chat_profile_config = _get_profile_by_name(current_profile)
+
     # Determine personalization state and keywords from profile
     personalization_on = True
     active_kw_values: list[str] = []
     if user_profile:
         personalization_on = user_profile.personalization_enabled
         active_kw_values = user_profile.active_keyword_values()
+
+    # Determine current prompt text for the editor
+    current_prompt = ""
+    if user_profile and user_profile.custom_prompt:
+        current_prompt = user_profile.custom_prompt
+    elif SYSTEM_PROMPT:
+        current_prompt = SYSTEM_PROMPT
 
     widgets: list = [
         Select(
@@ -2273,7 +2285,45 @@ def _build_chat_settings(
             description="Themen aus Ihrem Chatverlauf. Entfernen oder hinzufügen.",
             initial=active_kw_values,
         ),
+        Select(
+            id="regenerate_keywords",
+            label="Schlüsselwörter-Aktion",
+            description="Schlüsselwörter aus dem Chatverlauf neu extrahieren",
+            values=["– Keine Aktion –", "Jetzt neu generieren"],
+            initial_index=0,
+        ),
+        TextInput(
+            id="system_prompt",
+            label="System-Prompt (bearbeitbar)",
+            description="Bearbeiten Sie den Basis-Prompt. Leer lassen = Standard-Prompt verwenden.",
+            initial=current_prompt,
+            placeholder="System-Prompt hier eingeben …",
+            multiline=True,
+        ),
     ]
+
+    # Add read-only ROLLENKONTEXT so the user sees what gets appended
+    role_context = ""
+    if chat_profile_config:
+        ctx = chat_profile_config.get("prompt_context", "")
+        if ctx:
+            role_context = f"## ROLLENKONTEXT\n{ctx}"
+    if user_profile and user_profile.personalization_enabled:
+        active_kws = user_profile.active_keyword_values()
+        if active_kws:
+            kw_section = f"## PERSONALISIERTER KONTEXT\nThemen: {', '.join(active_kws)}"
+            role_context = f"{role_context}\n\n{kw_section}" if role_context else kw_section
+    if role_context:
+        widgets.append(
+            TextInput(
+                id="_readonly_context",
+                label="Automatisch ergänzt (nicht bearbeitbar)",
+                description="Wird dem Prompt je nach Rolle und Personalisierung hinzugefügt.",
+                initial=role_context,
+                multiline=True,
+                disabled=True,
+            ),
+        )
 
     return cl.ChatSettings(widgets)
 
@@ -2343,8 +2393,54 @@ async def on_settings_update(settings: dict[str, Any]):
             if removed:
                 changed_parts.append(f"Schlüsselwörter deaktiviert: {', '.join(removed)}")
 
+    # --- Handle keyword regeneration ---
+    if settings.get("regenerate_keywords") == "Jetzt neu generieren" and user_id:
+        try:
+            updated_profile = await regenerate_keywords(user_id)
+            user_profile = updated_profile
+            cl.user_session.set("user_profile", user_profile)
+            kw_list = user_profile.active_keyword_values()
+            if kw_list:
+                changed_parts.append(f"Schlüsselwörter neu generiert: {', '.join(kw_list)}")
+            else:
+                changed_parts.append("Keine Schlüsselwörter gefunden")
+        except Exception as exc:
+            print(f"[ERROR] regenerate_keywords in settings: {exc}")
+            changed_parts.append(f"Fehler beim Generieren: {exc}")
+
+    # --- Handle system prompt editing ---
+    if "system_prompt" in settings:
+        new_prompt_text = (settings.get("system_prompt") or "").strip()
+        if user_profile is None:
+            user_profile = UserProfile(user_id=user_id or "anonymous")
+
+        if not new_prompt_text or new_prompt_text == (SYSTEM_PROMPT or "").strip():
+            # Empty or identical to default → reset to default
+            user_profile.custom_prompt = None
+            if user_id:
+                upsert_user_profile(CHAT_DB_PATH, user_id, custom_prompt=None)
+            if user_profile.custom_prompt is not None or new_prompt_text == "":
+                changed_parts.append("System-Prompt → **Standard**")
+        else:
+            old_custom = user_profile.custom_prompt
+            if new_prompt_text != (old_custom or "").strip():
+                user_profile.custom_prompt = new_prompt_text
+                if user_id:
+                    upsert_user_profile(CHAT_DB_PATH, user_id, custom_prompt=new_prompt_text)
+                changed_parts.append("System-Prompt → **benutzerdefiniert**")
+        cl.user_session.set("user_profile", user_profile)
+
     # Rebuild system prompt with all changes
     _rebuild_system_prompt_in_session()
+
+    # Refresh settings panel so the read-only context reflects changes
+    refreshed = _build_chat_settings(
+        cl.user_session.get("chat_profile"),
+        cl.user_session.get("user_profile"),
+        cl.user_session.get("chat_profile_config"),
+    )
+    if refreshed:
+        await refreshed.send()
 
     if changed_parts:
         summary = "\n".join(f"- {p}" for p in changed_parts)
@@ -2441,9 +2537,36 @@ async def on_chat_start():
     cl.user_session.set("messages", messages)
 
     # Send chat settings with profile selector, personalization toggle, and keywords
-    chat_settings = _build_chat_settings(chat_profile_name, user_profile)
+    chat_settings = _build_chat_settings(chat_profile_name, user_profile, chat_profile_config)
     if chat_settings:
         await chat_settings.send()
+
+
+@cl.action_callback("regenerate_keywords")
+async def regenerate_keywords_action(action: cl.Action):
+    """Regenerate keywords from the user's chat history."""
+    user_id = cl.user_session.get("current_user_id")
+    if not user_id:
+        await cl.Message(content="Schlüsselwörter können nur für angemeldete Nutzer generiert werden.", author="System").send()
+        return
+    await cl.Message(content="Schlüsselwörter werden aus dem Chatverlauf neu generiert …", author="System").send()
+    try:
+        updated_profile = await regenerate_keywords(user_id)
+        cl.user_session.set("user_profile", updated_profile)
+        _rebuild_system_prompt_in_session()
+        kw_list = updated_profile.active_keyword_values()
+        if kw_list:
+            kw_str = ", ".join(kw_list)
+            await cl.Message(content=f"Schlüsselwörter aktualisiert: {kw_str}", author="System").send()
+        else:
+            await cl.Message(content="Keine Schlüsselwörter gefunden. Führen Sie zunächst einige Gespräche.", author="System").send()
+        # Refresh settings panel
+        chat_settings = _build_chat_settings(cl.user_session.get("chat_profile"), updated_profile, cl.user_session.get("chat_profile_config"))
+        if chat_settings:
+            await chat_settings.send()
+    except Exception as exc:
+        print(f"[ERROR] regenerate_keywords_action: {exc}")
+        await cl.Message(content=f"Fehler beim Generieren: {exc}", author="System").send()
 
 
 @cl.set_starters
