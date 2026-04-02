@@ -1,6 +1,6 @@
 {
   "_comment": "Chat-Profile für IT-Grundschutz Chatbot - Anpassbar durch Administratoren",
-  "_documentation": "Siehe apps/chainlit/CHAT_PROFILES.md für Anleitungen zur Anpassung",
+  "_documentation": "Siehe docs/CHAT_PROFILES.md für Anleitungen zur Anpassung",
 
   "profiles": [
     {
@@ -26,23 +26,24 @@
       "icon": "/public/icons/briefcase.svg",
       "description": "Verantwortlich für fachliche Prozesse und deren Sicherheitsanforderungen",
       "markdown_description": "Als **Fachverantwortliche/r** erhalten Sie Antworten mit Fokus auf:\n- Prozessbezogene Sicherheitsmaßnahmen\n- Schutzbedarfsfeststellung für Fachanwendungen\n- Integration von Sicherheit in Fachprozesse\n- Zusammenarbeit mit IT und ISB",
-      "relevant_bausteine": ["ORP", "APP", "CON"],
+      "relevant_bausteine": ["ISMS", "ORP", "APP", "CON"],
       "relevant_topics": [
         "Prozesssicherheit",
         "Fachanwendungen",
         "Schutzbedarf",
+        "Risikomanagement",
         "Datenklassifizierung",
         "Zugriffsrechte"
       ],
-      "prompt_context": "Du antwortest einer Person in der Rolle Fachverantwortliche/r. Fokussiere auf prozessbezogene Aspekte, die Integration von Sicherheit in Fachprozesse und die Zusammenarbeit mit IT und ISB. Erkläre Schutzbedarfsfeststellung und Datenklassifizierung praxisnah."
+      "prompt_context": "Du antwortest einer Person in der Rolle Fachverantwortliche/r. Fokussiere auf prozessbezogene Aspekte, die Integration von Sicherheit in Fachprozesse und die Zusammenarbeit mit IT und ISB. Erkläre Schutzbedarfsfeststellung, Risikomanagement und Datenklassifizierung praxisnah."
     },
     {
       "id": "it_leitung",
       "name": "Leitung IT-Betrieb",
       "icon": "/public/icons/server.svg",
       "description": "Leitung des IT-Betriebs mit strategischer und operativer Verantwortung",
-      "markdown_description": "Als **Leitung IT-Betrieb** erhalten Sie Antworten mit Fokus auf:\n- IT-Infrastruktur und Architektur\n- Ressourcenplanung und Budgetierung\n- IT-Service-Management\n- Technische Sicherheitskonzepte",
-      "relevant_bausteine": ["OPS", "NET", "SYS", "INF"],
+      "markdown_description": "Als **Leitung IT-Betrieb** erhalten Sie Antworten mit Fokus auf:\n- IT-Infrastruktur und Architektur\n- Ressourcenplanung und Budgetierung\n- Betriebsmodelle und Outsorcing\n- IT-Service-Management\n- Technische Sicherheitskonzepte",
+      "relevant_bausteine": ["ORP", "OPS", "NET", "SYS", "INF"],
       "relevant_topics": [
         "IT-Infrastruktur",
         "Netzwerksicherheit",
@@ -51,7 +52,7 @@
         "Monitoring",
         "IT-Service-Management"
       ],
-      "prompt_context": "Du antwortest einer Person in der Rolle Leitung IT-Betrieb. Fokussiere auf IT-Infrastruktur, strategische IT-Planung, Ressourcenmanagement und Service-Management. Berücksichtige sowohl technische als auch organisatorische Aspekte."
+      "prompt_context": "Du antwortest einer Person in der Rolle Leitung IT-Betrieb. Fokussiere auf IT-Infrastruktur, strategische IT-Planung, Ressourcenmanagement, Betriebsmodelle und Outsorcing und Service-Management. Berücksichtige sowohl technische als auch organisatorische Aspekte."
     },
     {
       "id": "it_durchfuehrung",
