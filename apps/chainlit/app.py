@@ -42,7 +42,9 @@ from native_chat import (
     create_user,
     ensure_native_schema,
     export_all_chats_zip,
+    export_feedback_csv,
     get_user_by_identifier,
+    upsert_feedback,
 )
 from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve
 from settings import (
@@ -2061,14 +2063,43 @@ async def on_app_startup() -> None:
 
         return {"message": "Registrierung erfolgreich", "username": user["identifier"]}
 
+    @chainlit_fastapi_app.get("/export/feedback")
+    async def export_feedback(current_user=Depends(get_current_user)):
+        if current_user is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        csv_file = await export_feedback_csv(
+            database_url=DATABASE_URL,
+            out_dir=CHAT_EXPORT_DIR,
+        )
+        return FileResponse(
+            path=str(csv_file),
+            media_type="text/csv; charset=utf-8",
+            filename=csv_file.name,
+        )
+
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/sources/pdf/{file_name:path}")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/sources/citations/{step_id}")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/all-chats")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/feedback")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/register")
 
     chainlit_fastapi_app.state.native_export_route_added = True
     print("[STARTUP] native export route registered at /export/all-chats")
+    print("[STARTUP] feedback export route registered at /export/feedback")
     print("[STARTUP] registration route registered at /auth/register")
+
+
+@cl.on_feedback
+async def on_feedback(feedback: cl.types.Feedback):
+    if not DATABASE_URL:
+        return
+    await upsert_feedback(
+        DATABASE_URL,
+        feedback_id=feedback.id or str(__import__("uuid").uuid4()),
+        step_id=feedback.forId,
+        value=float(feedback.value),
+        comment=feedback.comment,
+    )
 
 
 @cl.on_chat_resume
