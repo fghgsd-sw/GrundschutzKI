@@ -6,10 +6,13 @@ ENV PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-COPY . /app
-
+# Dependencies first → cached unless pyproject.toml changes
+COPY pyproject.toml /app/
 RUN pip install --upgrade pip \
     && pip install -e .
+
+# App code + static assets last → fast rebuilds on CSS/JS changes
+COPY . /app
 
 EXPOSE 8000
 
