@@ -2042,6 +2042,9 @@ async def on_app_startup() -> None:
     async def export_feedback(current_user=Depends(get_current_user)):
         if current_user is None:
             raise HTTPException(status_code=401, detail="Unauthorized")
+        user_meta = getattr(current_user, "metadata", None) or {}
+        if user_meta.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
         csv_file = await export_feedback_csv(
             database_url=DATABASE_URL,
             out_dir=CHAT_EXPORT_DIR,
