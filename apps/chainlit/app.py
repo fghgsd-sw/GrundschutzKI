@@ -2690,8 +2690,13 @@ async def ask_followup(action: cl.Action):
     question = payload.get("question")
     if not isinstance(question, str) or not question.strip():
         return
-    await cl.Message(content=question, author="You", type="user_message").send()
-    await main(cl.Message(content=question))
+    user_msg = cl.Message(content=question, author="You", type="user_message")
+    await user_msg.send()
+    # Wrap in a "run" Step so Chainlit renders feedback buttons (copy, thumbs)
+    # just like @cl.on_message does internally.
+    async with cl.Step(name="on_message", type="run", parent_id=user_msg.id) as step:
+        step.input = question
+        await main(cl.Message(content=question))
 
 
 @cl.on_message
