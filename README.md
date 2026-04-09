@@ -1,10 +1,10 @@
-<div style="background-color: #ffffff; color: #000000; padding: 10px;">
-<img src="00_aisc\img\logo_aisc_bmftr.jpg">
-<br>
-<img src="00_aisc\img\logo_fghgsd_60.png" style="display: block; margin: 0 auto;">
-<br><br>
-<h1> IT-Grundschutz-KI
-</div>
+<p align="center">
+  <img src="00_aisc/img/logo_aisc_bmftr.jpg" alt="AISC / BMFTR">
+  <br>
+  <img src="00_aisc/img/logo_fghgsd_60.png" alt="FGHGsD">
+</p>
+
+# IT-Grundschutz-KI
 
 Entwicklung des Chat Bots GSKI, der die Erarbeitung von Sicherheitskonzepten gemäß den BSI-Standards als zuverlässiger Wissensträger unterstützt. Fragen dazu beantwortet er ebenso richtig wie vollständig und durch Quellenangaben sorgt er für Transparenz und Wissenstransfer.
 
