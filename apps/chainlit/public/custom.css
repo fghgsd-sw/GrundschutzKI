@@ -1,14 +1,4 @@
 /* Make action buttons roomier and allow long follow-up questions to remain readable. */
-[data-testid="message-actions"],
-[data-testid="actions"],
-.message-actions,
-[class*="message-actions"] {
-  display: flex;
-  flex-wrap: wrap;
-  margin-top: 8px;
-  clear: both;
-}
-
 [data-testid="message-actions"] button,
 [data-testid="actions"] button,
 .message-actions button,
@@ -47,60 +37,4 @@ a[href*="/sources/pdf/"]:hover {
 [data-testid="chat-settings-sidebar-content"] textarea {
   overflow: hidden !important;
   resize: none !important;
-}
-
-/* ── Right-side PDF viewer panel (overlay) ──────────────── */
-.gski-pdf-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  width: 50vw;
-  height: 100vh;
-  display: none;
-  flex-direction: column;
-  z-index: 1300;
-  background: #fff;
-  box-shadow: -3px 0 12px rgba(0, 0, 0, 0.18);
-}
-
-.gski-pdf-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 14px;
-  background: #f5f6f8;
-  border-bottom: 1px solid #ddd;
-  flex-shrink: 0;
-}
-
-.gski-pdf-panel-title {
-  font-weight: 600;
-  font-size: 0.92rem;
-  color: #1f4e79;
-}
-
-.gski-pdf-panel-close {
-  background: none;
-  border: 1px solid #bbb;
-  border-radius: 4px;
-  padding: 4px 10px;
-  cursor: pointer;
-  font-size: 0.85rem;
-  color: #333;
-}
-
-.gski-pdf-panel-close:hover {
-  background: #e8e8e8;
-}
-
-.gski-pdf-panel-iframe {
-  flex: 1;
-  width: 100%;
-  border: none;
-}
-
-@media (max-width: 900px) {
-  .gski-pdf-panel {
-    width: 100vw;
-  }
 }
