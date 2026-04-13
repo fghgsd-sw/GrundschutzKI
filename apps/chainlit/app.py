@@ -3,12 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
+import secrets
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
+
+import aiosmtplib
 
 import asyncpg
 import bcrypt
@@ -16,6 +21,7 @@ import chainlit as cl
 from chainlit.auth import get_current_user
 from chainlit.input_widget import Select, Switch, Tags, TextInput
 from chainlit.types import Starter
+import fastapi
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
@@ -45,9 +51,11 @@ from native_chat import (
     export_feedback_csv,
     get_user_by_identifier,
     upsert_feedback,
+    verify_user_email,
 )
 from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve
 from settings import (
+    APP_BASE_URL,
     CHAT_DB_PATH,
     CHAT_EXPORT_DIR,
     CHAINLIT_AUTH_PASSWORD,
@@ -55,12 +63,20 @@ from settings import (
     CHAINLIT_INIT_DB,
     DATA_RAW_DIR,
     DATABASE_URL,
+    EMAIL_VERIFICATION_ENABLED,
     EMBED_MODEL,
     MAX_TOP_K,
     MAX_SOURCE_LINKS,
     PERSONALIZED_FOLLOWUPS_COUNT,
     PROFILE_MIN_MESSAGES,
+    SMTP_FROM,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+    SMTP_USE_TLS,
+    SMTP_USER,
     STARTER_QUESTIONS,
+    STARTER_QUESTIONS_COUNT,
     SYSTEM_PROMPT_PATH,
     TOP_K,
 )
@@ -78,6 +94,31 @@ def _load_system_prompt(path: Path) -> str | None:
         content = path.read_text(encoding="utf-8").strip()
         return content or None
     return None
+
+
+async def _send_verification_email(to_email: str, username: str, token: str) -> None:
+    """Send an email verification link via SMTP."""
+    verify_url = f"{APP_BASE_URL.rstrip('/')}/auth/verify?token={token}"
+    msg = EmailMessage()
+    msg["Subject"] = "GrundschutzKI – E-Mail-Adresse bestätigen"
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_email
+    msg.set_content(
+        f"Hallo {username},\n\n"
+        f"bitte bestätige deine E-Mail-Adresse, indem du folgenden Link öffnest:\n\n"
+        f"{verify_url}\n\n"
+        f"Falls du dich nicht registriert hast, ignoriere diese E-Mail.\n\n"
+        f"Viele Grüße\nGrundschutzKI"
+    )
+    await aiosmtplib.send(
+        msg,
+        hostname=SMTP_HOST,
+        port=SMTP_PORT,
+        username=SMTP_USER,
+        password=SMTP_PASSWORD,
+        use_tls=SMTP_USE_TLS and SMTP_PORT == 465,
+        start_tls=SMTP_USE_TLS and SMTP_PORT != 465,
+    )
 
 
 SYSTEM_PROMPT = _load_system_prompt(SYSTEM_PROMPT_PATH)
@@ -1948,6 +1989,9 @@ async def auth_callback(username: str, password: str) -> cl.User | None:
         user = await get_user_by_identifier(DATABASE_URL, username)
         if user and user.get("password_hash"):
             if _verify_password(password, user["password_hash"]):
+                # Block login if email verification is required but not done
+                if EMAIL_VERIFICATION_ENABLED and not user.get("email_verified", False):
+                    return None
                 metadata = json.loads(user.get("metadata") or "{}")
                 metadata["provider"] = "local"
                 return cl.User(identifier=user["identifier"], metadata=metadata)
@@ -2039,29 +2083,81 @@ async def on_app_startup() -> None:
         password: str
 
     @chainlit_fastapi_app.post("/auth/register")
-    async def register_user(request: RegisterRequest):
+    async def register_user(
+        username: str = fastapi.Body(...),
+        email: str = fastapi.Body(...),
+        password: str = fastapi.Body(...),
+    ):
         # Validate input
-        if not request.username or len(request.username) < 3:
+        if not username or len(username) < 3:
             raise HTTPException(status_code=400, detail="Benutzername muss mindestens 3 Zeichen haben")
-        if not request.email or "@" not in request.email:
+        if not email or "@" not in email:
             raise HTTPException(status_code=400, detail="Ungültige E-Mail-Adresse")
-        if not request.password or len(request.password) < 8:
+        if not password or len(password) < 8:
             raise HTTPException(status_code=400, detail="Passwort muss mindestens 8 Zeichen haben")
 
         # Check if user/email already exists
-        exists = await check_user_exists(DATABASE_URL, request.username, request.email)
+        exists = await check_user_exists(DATABASE_URL, username, email)
         if exists["username_exists"]:
             raise HTTPException(status_code=409, detail="Benutzername bereits vergeben")
         if exists["email_exists"]:
             raise HTTPException(status_code=409, detail="E-Mail-Adresse bereits registriert")
 
         # Create user with hashed password
-        password_hash = _hash_password(request.password)
-        user = await create_user(DATABASE_URL, request.username, request.email, password_hash)
-        if user is None:
-            raise HTTPException(status_code=500, detail="Registrierung fehlgeschlagen")
+        password_hash = _hash_password(password)
 
-        return {"message": "Registrierung erfolgreich", "username": user["identifier"]}
+        if EMAIL_VERIFICATION_ENABLED and SMTP_HOST:
+            token = secrets.token_urlsafe(32)
+            user = await create_user(
+                DATABASE_URL, username, email, password_hash,
+                email_verified=False, verification_token=token,
+            )
+            if user is None:
+                raise HTTPException(status_code=500, detail="Registrierung fehlgeschlagen")
+            try:
+                await _send_verification_email(email, username, token)
+            except Exception as exc:
+                print(f"[ERROR] verification email failed: {exc}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Registrierung gespeichert, aber Bestätigungs-E-Mail konnte nicht gesendet werden. Bitte kontaktiere den Administrator.",
+                )
+            return {
+                "message": "Registrierung erfolgreich! Bitte bestätige deine E-Mail-Adresse über den zugesandten Link.",
+                "username": user["identifier"],
+                "email_verification_required": True,
+            }
+        else:
+            user = await create_user(
+                DATABASE_URL, username, email, password_hash,
+                email_verified=True,
+            )
+            if user is None:
+                raise HTTPException(status_code=500, detail="Registrierung fehlgeschlagen")
+            return {"message": "Registrierung erfolgreich", "username": user["identifier"]}
+
+    @chainlit_fastapi_app.get("/auth/verify")
+    async def verify_email(token: str = fastapi.Query(...)):
+        if not token or len(token) < 10:
+            raise HTTPException(status_code=400, detail="Ungültiger Token")
+        result = await verify_user_email(DATABASE_URL, token)
+        if result is None:
+            return fastapi.responses.HTMLResponse(
+                content="<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+                "<h2>Link ungültig oder bereits verwendet</h2>"
+                "<p>Der Bestätigungslink ist ungültig oder deine E-Mail wurde bereits bestätigt.</p>"
+                f'<p><a href="{APP_BASE_URL}">Zum Login</a></p>'
+                "</body></html>",
+                status_code=400,
+            )
+        return fastapi.responses.HTMLResponse(
+            content="<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+            f"<h2>E-Mail bestätigt!</h2>"
+            f"<p>Hallo <b>{result['identifier']}</b>, dein Konto ist jetzt aktiv.</p>"
+            f'<p><a href="{APP_BASE_URL}">Jetzt einloggen</a></p>'
+            "</body></html>",
+            status_code=200,
+        )
 
     @chainlit_fastapi_app.get("/export/feedback")
     async def export_feedback(current_user=Depends(get_current_user)):
@@ -2085,11 +2181,14 @@ async def on_app_startup() -> None:
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/all-chats")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/feedback")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/register")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/verify")
 
     chainlit_fastapi_app.state.native_export_route_added = True
     print("[STARTUP] native export route registered at /export/all-chats")
     print("[STARTUP] feedback export route registered at /export/feedback")
     print("[STARTUP] registration route registered at /auth/register")
+    print("[STARTUP] email verification route registered at /auth/verify")
+    print(f"[STARTUP] email_verification_enabled={EMAIL_VERIFICATION_ENABLED} smtp_host={SMTP_HOST}")
 
 
 @cl.on_feedback
@@ -2610,8 +2709,10 @@ async def set_starters() -> list[Starter]:
         "/public/icons/search.svg",
         "/public/icons/book.svg",
     ]
+    count = min(STARTER_QUESTIONS_COUNT, len(STARTER_QUESTIONS))
+    selected = random.sample(STARTER_QUESTIONS, count) if STARTER_QUESTIONS else []
     starters: list[Starter] = []
-    for i, q in enumerate(STARTER_QUESTIONS[:6]):
+    for i, q in enumerate(selected):
         starters.append(
             Starter(
                 label=q if len(q) <= 70 else q[:67].rstrip() + "...",

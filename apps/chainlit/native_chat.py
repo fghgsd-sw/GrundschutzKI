@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS "User" (
   identifier TEXT UNIQUE NOT NULL,
   email TEXT UNIQUE,
   password_hash TEXT,
+  email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  verification_token TEXT,
   metadata TEXT NOT NULL DEFAULT '{}',
   "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
@@ -35,6 +37,12 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'User' AND column_name = 'password_hash') THEN
     ALTER TABLE "User" ADD COLUMN password_hash TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'User' AND column_name = 'email_verified') THEN
+    ALTER TABLE "User" ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'User' AND column_name = 'verification_token') THEN
+    ALTER TABLE "User" ADD COLUMN verification_token TEXT;
   END IF;
 END $$;
 
@@ -114,21 +122,25 @@ async def create_user(
     username: str,
     email: str,
     password_hash: str,
+    *,
+    email_verified: bool = False,
+    verification_token: str | None = None,
 ) -> dict[str, Any] | None:
     """Create a new user with hashed password. Returns user dict or None if exists."""
     conn = await asyncpg.connect(database_url)
     try:
         row = await conn.fetchrow(
             """
-            INSERT INTO "User" (identifier, email, password_hash, metadata)
-            VALUES ($1, $2, $3, '{"provider": "local"}')
+            INSERT INTO "User" (identifier, email, password_hash, email_verified, verification_token, metadata)
+            VALUES ($1, $2, $3, $4, $5, '{"provider": "local"}')
             ON CONFLICT (identifier) DO NOTHING
-            ON CONFLICT (email) DO NOTHING
-            RETURNING id, identifier, email, metadata, "createdAt"
+            RETURNING id, identifier, email, email_verified, metadata, "createdAt"
             """,
             username,
             email,
             password_hash,
+            email_verified,
+            verification_token,
         )
         if row is None:
             return None
@@ -146,11 +158,32 @@ async def get_user_by_identifier(
     try:
         row = await conn.fetchrow(
             """
-            SELECT id, identifier, email, password_hash, metadata, "createdAt"
+            SELECT id, identifier, email, password_hash, email_verified, metadata, "createdAt"
             FROM "User"
             WHERE identifier = $1
             """,
             identifier,
+        )
+        return dict(row) if row else None
+    finally:
+        await conn.close()
+
+
+async def verify_user_email(
+    database_url: str,
+    token: str,
+) -> dict[str, Any] | None:
+    """Verify a user's email by token. Returns user dict or None if token invalid."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        row = await conn.fetchrow(
+            """
+            UPDATE "User"
+            SET email_verified = TRUE, verification_token = NULL, "updatedAt" = NOW()
+            WHERE verification_token = $1 AND email_verified = FALSE
+            RETURNING id, identifier, email
+            """,
+            token,
         )
         return dict(row) if row else None
     finally:

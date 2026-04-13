@@ -44,6 +44,15 @@ services:
       CHAINLIT_AUTH_USERNAME: ${CHAINLIT_AUTH_USERNAME:-admin}
       CHAINLIT_AUTH_PASSWORD: ${CHAINLIT_AUTH_PASSWORD:-admin}
       CHAINLIT_INIT_DB: ${CHAINLIT_INIT_DB:-true}
+      # SMTP / Email verification (set in .env)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      EMAIL_VERIFICATION_ENABLED: ${EMAIL_VERIFICATION_ENABLED:-false}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
       # IMPORTANT: inside Docker network, use service DNS name (not localhost)
       QDRANT_URL: http://qdrant:6333
       # IMPORTANT: in container, use mounted absolute paths

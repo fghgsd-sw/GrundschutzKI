@@ -69,8 +69,18 @@ STARTER_QUESTIONS = _getenv_list(
         "Was ist der Unterschied zwischen Prozess- und Systembausteinen?",
         "Welche Schritte umfasst die Basis-Absicherung nach BSI-Standard 200-2?",
         "Wie müssen Passwörter bei der Authentisierung am Webserver gesichert werden?",
+        "Was sind die Kernabsicherung und die Standard-Absicherung?",
+        "Welche Rolle spielt der IT-Sicherheitsbeauftragte im BSI-Grundschutz?",
+        "Wie wird eine Schutzbedarfsfeststellung durchgeführt?",
+        "Was ist ein IT-Grundschutz-Baustein und wie ist er aufgebaut?",
+        "Welche Gefährdungen adressiert der Baustein OPS.1.1.3 Patch- und Änderungsmanagement?",
+        "Wie funktioniert die Risikoanalyse nach BSI-Standard 200-3?",
+        "Was versteht man unter dem Schichtenmodell im IT-Grundschutz?",
+        "Welche Anforderungen stellt der Baustein APP.1.1 Office-Produkte?",
+        "Was sind die Phasen des BSI-Sicherheitsprozesses?",
     ],
 )
+STARTER_QUESTIONS_COUNT = int(_getenv("STARTER_QUESTIONS_COUNT", "3"))
 
 CHAT_DB_PATH = Path(
     _getenv(
@@ -90,6 +100,18 @@ DATABASE_URL = _getenv("DATABASE_URL")
 CHAINLIT_AUTH_USERNAME = _getenv("CHAINLIT_AUTH_USERNAME", "admin")
 CHAINLIT_AUTH_PASSWORD = _getenv("CHAINLIT_AUTH_PASSWORD", "admin")
 CHAINLIT_INIT_DB = (_getenv("CHAINLIT_INIT_DB", "true") or "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
+# SMTP / Email Verification Settings
+# ---------------------------------------------------------------------------
+SMTP_HOST = _getenv("SMTP_HOST")
+SMTP_PORT = int(_getenv("SMTP_PORT", "587"))
+SMTP_USER = _getenv("SMTP_USER")
+SMTP_PASSWORD = _getenv("SMTP_PASSWORD")
+SMTP_FROM = _getenv("SMTP_FROM", SMTP_USER)
+SMTP_USE_TLS = (_getenv("SMTP_USE_TLS", "true") or "true").lower() == "true"
+EMAIL_VERIFICATION_ENABLED = (_getenv("EMAIL_VERIFICATION_ENABLED", "false") or "false").lower() == "true"
+APP_BASE_URL = _getenv("APP_BASE_URL", "http://localhost:8000")
 
 # ---------------------------------------------------------------------------
 # Personalization Settings
