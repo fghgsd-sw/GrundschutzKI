@@ -950,7 +950,13 @@ def _canonicalize_citations(
         * any of first-5 section tokens appears in match text -> +2
 
     Thresholds:
-        * numbered form (``Quelle 3: ...``)  -> require best_score >= 2
+        * numbered form (``Quelle 3: ...``) -> require best_score >= 2,
+          AND when best_score == 3 (pure page-range hit with no other
+          signal) require a corroborating signal: BSI-ID in section,
+          >= 1 section-token hit, OR the winning alias's ``Quelle N:``
+          prefix number matches the LLM-provided number. This prevents
+          silent mis-routing when multiple retrieved sources share a
+          page and the LLM-supplied title doesn't match either.
         * numberless form (``Quelle APP.3.2 ...``) -> require best_score >= 5
           AND either a BSI-ID match OR >= 2 section-token hits, to avoid
           rewriting prose like "Die Quelle der Daten (S.10)".
@@ -1025,7 +1031,21 @@ def _canonicalize_citations(
                 )
                 return raw
         else:
-            if best_score < 2:
+            # A bare page-range hit (+3) alone is not enough. When two
+            # retrieved sources share a page and the LLM section title
+            # doesn't match either, the earlier entry wins the strict `>`
+            # tie-break and we'd silently rewrite `Quelle 3: ...` to the
+            # wrong alias. Require a corroborating signal in that case.
+            alias_num_match = re.match(
+                r"^\s*Quelle\s+(\d+)\s*:", best_alias, flags=re.IGNORECASE
+            )
+            alias_num_matches = bool(
+                alias_num_match and alias_num_match.group(1) == num_group
+            )
+            has_content_signal = (
+                best_bsi_hit or best_section_token_hits >= 1 or alias_num_matches
+            )
+            if best_score < 2 or (best_score == 3 and not has_content_signal):
                 print(
                     f"[WARN] citation.unresolved fragment={raw[:160]!r} "
                     f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
@@ -2042,6 +2062,10 @@ async def on_chat_resume(thread: dict[str, Any]):
     restored_citation_history: list[dict[str, Any]] = []
     latest_assistant_step_id: str | None = None
     latest_assistant_has_actions = False
+    # Per-step citation metadata so "Quellen anzeigen" can be restored on
+    # every historical assistant step, not just the latest one. See the
+    # loop below and the comment block in the assistant_message branch.
+    historical_citation_steps: list[dict[str, Any]] = []
     if SYSTEM_PROMPT:
         messages.append({"role": "system", "content": SYSTEM_PROMPT})
 
@@ -2061,10 +2085,14 @@ async def on_chat_resume(thread: dict[str, Any]):
             if text:
                 messages.append({"role": "assistant", "content": text})
             step_id = step.get("id")
+            normalized_step_id: str | None = None
+            step_has_actions = False
             if isinstance(step_id, str) and step_id.strip():
+                normalized_step_id = step_id
                 latest_assistant_step_id = step_id
                 step_actions = step.get("actions")
-                latest_assistant_has_actions = isinstance(step_actions, list) and len(step_actions) > 0
+                step_has_actions = isinstance(step_actions, list) and len(step_actions) > 0
+                latest_assistant_has_actions = step_has_actions
             metadata = _coerce_step_metadata(step)
             panel_content = metadata.get("citation_panel_content")
             source_rows = metadata.get("citation_source_rows")
@@ -2080,10 +2108,24 @@ async def on_chat_resume(thread: dict[str, Any]):
             # reattaching per-source PDFs on every resumed message would force
             # an unrequested sidebar open. Historical messages therefore render
             # `Quelle N:` references as plain text; the per-step "Quellen
-            # anzeigen" action (restored below) is the on-demand path for
-            # citations in old answers. Fresh answers in the same session
+            # anzeigen" action (restored below for EVERY historical step with
+            # citation metadata, not just the latest) is the on-demand path
+            # for citations in old answers. Fresh answers in the same session
             # still attach inline PDFs in the hot path, so the inline button
             # behavior is preserved for newly-rendered messages.
+            if (
+                normalized_step_id
+                and isinstance(panel_content, str)
+                and panel_content.strip()
+            ):
+                historical_citation_steps.append(
+                    {
+                        "step_id": normalized_step_id,
+                        "has_actions": step_has_actions,
+                        "panel_content": panel_content,
+                        "source_rows": valid_rows,
+                    }
+                )
             restored_citation_history = _append_citation_history(
                 restored_citation_history,
                 panel_content if isinstance(panel_content, str) else None,
@@ -2123,6 +2165,25 @@ async def on_chat_resume(thread: dict[str, Any]):
             has_citations_panel=bool(isinstance(citation_panel_for_actions, str) and citation_panel_for_actions.strip()),
             citation_panel_content=citation_panel_for_actions,
             citation_source_rows=citation_source_rows_for_actions,
+        )
+
+    # Restore per-step "Quellen anzeigen" actions on every HISTORICAL
+    # assistant step that had a citation panel but no persisted actions.
+    # The latest step is handled above with the full action set (including
+    # followups). Followups are intentionally omitted for older steps —
+    # clicking a followup from mid-history would inject it into the current
+    # conversation in a confusing order.
+    for entry in historical_citation_steps:
+        if entry["step_id"] == latest_assistant_step_id:
+            continue
+        if entry["has_actions"]:
+            continue
+        await _restore_actions_for_step(
+            entry["step_id"],
+            followup_questions=[],
+            has_citations_panel=True,
+            citation_panel_content=entry["panel_content"],
+            citation_source_rows=entry["source_rows"],
         )
 
     # Defensive: if anything in the restore path opened the side panel,
