@@ -667,7 +667,12 @@ def _source_alias(source_number: int, section_title: str | None, page_start: int
     section = (section_title or "Abschnitt unbekannt").strip()
     section = re.sub(r"\s+", " ", section)
     if len(section) > 48:
-        section = section[:45].rstrip() + "..."
+        truncated = section[:45].rstrip()
+        # Drop back before any unmatched `[` so Chainlit's frontend can wrap
+        # the alias as a markdown link without the inner `[` breaking parsing.
+        if truncated.count("[") > truncated.count("]"):
+            truncated = truncated.rsplit("[", 1)[0].rstrip(" ,")
+        section = f"{truncated}..."
     return f"Quelle {source_number}: {section} ({_page_label(page_start, page_end)})"
 
 
@@ -905,6 +910,131 @@ def _normalize_source_mentions_by_content(
         text,
         flags=re.IGNORECASE,
     )
+
+
+# Anchored on the literal word "Quelle". Tolerates (a) optional **/__ decorators
+# around the span (stripped on replacement so Chainlit's frontend can wrap the
+# alias as a clickable anchor), and (b) a missing "N: " prefix (filled in from
+# the best-matching source_row alias). See the `_canonicalize_citations` docstring.
+_CITATION_CANONICAL_RE = re.compile(
+    r"(?P<pre>\*{1,2}|_{1,2})?"
+    r"\bQuelle\s+"
+    r"(?:(?P<num>\d+)\s*:\s*)?"
+    r"(?P<body>[^\n]{1,220}?)"
+    r"\((?:S\.?|Seite)\s*(?P<page>\d+)(?:\s*[-\u2013]\s*(?P<page_end>\d+))?\s*\)"
+    r"(?P<post>\*{1,2}|_{1,2})?",
+    flags=re.IGNORECASE,
+)
+
+_BSI_ID_RE = re.compile(r"[A-Z]{3,4}(?:\.\d+){1,3}(?:\.[ASH]\d+)?")
+
+
+def _canonicalize_citations(
+    text: str,
+    source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]],
+) -> str:
+    """Final-pass canonicalizer: every `Quelle ...(S.X)` span in ``text`` is
+    rewritten to the exact alias of the best-matching source_row, with any
+    adjacent stray bold/italic markers stripped.
+
+    Why this exists: Chainlit's frontend wires clicks to inline cl.Pdf elements
+    via strict ``name`` equality against substrings in the assistant content.
+    LLM output routinely deviates from the prescribed alias format in ways that
+    defeat that equality check — unmatched ``**`` around the token, or a
+    missing ``N: `` prefix. This pass is the single source of truth for
+    mapping any citation-shaped span back to a registered element name.
+
+    Scoring signals:
+        * page in [page_start, page_end]  -> +3
+        * BSI-ID appears verbatim in section -> +4
+        * any of first-5 section tokens appears in match text -> +2
+
+    Thresholds:
+        * numbered form (``Quelle 3: ...``)  -> require best_score >= 2
+        * numberless form (``Quelle APP.3.2 ...``) -> require best_score >= 5
+          AND either a BSI-ID match OR >= 2 section-token hits, to avoid
+          rewriting prose like "Die Quelle der Daten (S.10)".
+
+    Below-threshold matches are left unchanged (fails open). Idempotent when
+    the pipeline already agrees.
+    """
+    if not text or not source_rows:
+        return text
+
+    def norm(s: str) -> str:
+        s = s.lower()
+        s = re.sub(r"[^a-z0-9\u00e4\u00f6\u00fc\u00df]+", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    entries: list[dict[str, Any]] = []
+    for _, alias, _, page_start, page_end, section_title, _ in source_rows:
+        entries.append(
+            {
+                "alias": alias,
+                "section": norm(section_title or ""),
+                "page_start": page_start,
+                "page_end": page_end,
+            }
+        )
+
+    def repl(match: re.Match) -> str:
+        raw = match.group(0)
+        body = match.group("body") or ""
+        num_group = match.group("num")
+        wanted_page = int(match.group("page"))
+        # Score the full match text so pre/post decorators don't perturb token
+        # comparisons; the replacement below still consumes them.
+        rnorm = norm(raw)
+
+        bsi_match = _BSI_ID_RE.search(body)
+        bsi_id = bsi_match.group(0).lower() if bsi_match else None
+
+        best_alias: str | None = None
+        best_score = 0
+        best_section_token_hits = 0
+        best_bsi_hit = False
+        for entry in entries:
+            score = 0
+            section = entry["section"] or ""
+            start = entry["page_start"]
+            end = entry["page_end"] or start
+            if isinstance(start, int) and isinstance(end, int) and start <= wanted_page <= end:
+                score += 3
+            bsi_hit = bool(bsi_id and bsi_id in section)
+            if bsi_hit:
+                score += 4
+            section_tokens = section.split()[:5]
+            token_hits = sum(1 for tok in section_tokens if tok in rnorm)
+            if token_hits:
+                score += 2
+            if score > best_score:
+                best_score = score
+                best_alias = entry["alias"]
+                best_section_token_hits = token_hits
+                best_bsi_hit = bsi_hit
+
+        if not best_alias:
+            return raw
+
+        if num_group is None:
+            # Numberless form: demand strong signal to avoid rewriting prose.
+            if best_score < 5 or not (best_bsi_hit or best_section_token_hits >= 2):
+                print(
+                    f"[WARN] citation.unresolved (numberless) fragment={raw[:160]!r} "
+                    f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
+                )
+                return raw
+        else:
+            if best_score < 2:
+                print(
+                    f"[WARN] citation.unresolved fragment={raw[:160]!r} "
+                    f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
+                )
+                return raw
+
+        return best_alias
+
+    return _CITATION_CANONICAL_RE.sub(repl, text)
 
 
 def _inject_source_alias_links(
@@ -2281,8 +2411,15 @@ async def ask_followup(action: cl.Action):
     question = payload.get("question")
     if not isinstance(question, str) or not question.strip():
         return
-    await cl.Message(content=question, author="You", type="user_message").send()
-    await main(cl.Message(content=question))
+    user_msg = cl.Message(content=question, author="You", type="user_message")
+    await user_msg.send()
+    # Wrap main() in a Step(type='run', ...) so the resulting assistant
+    # message is attached to a scorable run, matching what @cl.on_message
+    # does internally. Without this, Chainlit's frontend gates copy +
+    # thumbs on the absent `scorableRun` and hides them on the new answer.
+    async with cl.Step(name="on_message", type="run", parent_id=user_msg.id) as run_step:
+        run_step.input = question
+        await main(cl.Message(content=question))
 
 
 @cl.on_message
@@ -2674,6 +2811,16 @@ async def main(message: cl.Message):
             source_rows,
             source_rows_for_session,
         )
+
+        # Final canonicalization: every "Quelle ...(S.X)" span in the content is
+        # rewritten to an exact element-name alias, and any adjacent stray **/__
+        # decorators are stripped. Handles LLM deviations the upstream chain
+        # cannot repair: orphan bold wrappers (e.g. "**Quelle 1: ... (S.X)" with
+        # no closing "**") and the numberless form ("Quelle APP.3.2 ... (S.X)").
+        # Chainlit's frontend uses strict substring equality against element
+        # names, so any residual divergence silently kills the click handler.
+        # This pass is idempotent when the pipeline already agrees.
+        content = _canonicalize_citations(content, source_rows)
 
         if source_catalog_changed:
             sanitized_catalog = _sanitize_source_catalog(session_source_catalog)
