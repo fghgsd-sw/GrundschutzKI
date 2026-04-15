@@ -48,3 +48,110 @@ a[href*="/sources/pdf/"]:hover {
   overflow: hidden !important;
   resize: none !important;
 }
+
+/* ── Self-registration form ──────────────────────────────── */
+#gski-register-panel {
+  width: 100%;
+  max-width: 400px;
+  margin: 16px auto 0;
+  text-align: center;
+}
+
+.gski-reg-toggle {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 12px;
+}
+
+.gski-reg-toggle a {
+  color: #90caf9;
+  text-decoration: none;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gski-reg-toggle a:hover {
+  text-decoration: underline;
+}
+
+#gski-reg-form {
+  text-align: left;
+  padding: 20px 24px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#gski-reg-form h3 {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 600;
+}
+
+#gski-reg-form input {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 0.95rem;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 150ms;
+}
+
+#gski-reg-form input:focus {
+  border-color: #90caf9;
+}
+
+#gski-reg-form input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+#gski-reg-submit {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  margin-top: 4px;
+  border: none;
+  border-radius: 6px;
+  background: #1976d2;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms;
+}
+
+#gski-reg-submit:hover {
+  background: #1565c0;
+}
+
+#gski-reg-submit:disabled {
+  background: #555;
+  cursor: not-allowed;
+}
+
+.gski-reg-msg-ok,
+.gski-reg-msg-err {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.gski-reg-msg-ok {
+  background: rgba(76, 175, 80, 0.15);
+  color: #81c784;
+  border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.gski-reg-msg-err {
+  background: rgba(244, 67, 54, 0.15);
+  color: #e57373;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
