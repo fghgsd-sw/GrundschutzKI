@@ -36,6 +36,11 @@ MAX_SOURCE_LINKS = int(_getenv("MAX_SOURCE_LINKS", "8"))
 SCORE_THRESHOLD = float(_getenv("SCORE_THRESHOLD", "0.0"))
 STREAMING_ENABLED = (_getenv("STREAMING_ENABLED", "false") or "false").lower() == "true"
 STREAMING_DOUBLE_PASS = (_getenv("STREAMING_DOUBLE_PASS", "false") or "false").lower() == "true"
+LANGFLOW_ENABLED = (_getenv("LANGFLOW_ENABLED", "false") or "false").lower() == "true"
+LANGFLOW_BASE_URL = (_getenv("LANGFLOW_BASE_URL", "http://localhost:7860") or "http://localhost:7860").rstrip("/")
+LANGFLOW_FLOW_ID = _getenv("LANGFLOW_FLOW_ID")
+LANGFLOW_API_KEY = _getenv("LANGFLOW_API_KEY")
+LANGFLOW_OUTPUT_COMPONENT = _getenv("LANGFLOW_OUTPUT_COMPONENT")
 
 SYSTEM_PROMPT_PATH = Path(
     _getenv(

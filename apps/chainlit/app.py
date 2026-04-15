@@ -35,6 +35,7 @@ from chat_history import (
     set_user_selected_chat_profile,
     update_chat_session_metadata,
 )
+from langflow_client import LangflowError, run_langflow
 from llm import chat, message_to_dict
 from native_chat import (
     check_user_exists,
@@ -53,6 +54,7 @@ from settings import (
     DATA_RAW_DIR,
     DATABASE_URL,
     EMBED_MODEL,
+    LANGFLOW_ENABLED,
     MAX_TOP_K,
     MAX_SOURCE_LINKS,
     PERSONALIZATION_ENABLED,
@@ -269,6 +271,59 @@ Der Nutzer hat sich häufig mit folgenden Themen beschäftigt: {topics_str}
 - {personalized_followups} der 3 Anschlussfragen sollten sich auf die Nutzerinteressen beziehen
 - Beispiel: Wenn der Nutzer sich für Webserver interessiert, könnte eine Anschlussfrage lauten: "Welche speziellen Anforderungen gelten für Webserver in diesem Kontext?"
 """
+
+
+def _effective_system_prompt(messages: list[dict[str, Any]]) -> str:
+    if not messages:
+        return ""
+    first = messages[0]
+    if not isinstance(first, dict) or first.get("role") != "system":
+        return ""
+    content = first.get("content")
+    return content.strip() if isinstance(content, str) else ""
+
+
+def _current_chat_profile_prompt() -> str:
+    config = cl.user_session.get("chat_profile_config")
+    if not isinstance(config, dict):
+        return ""
+    prompt_context = config.get("prompt_context")
+    return prompt_context.strip() if isinstance(prompt_context, str) else ""
+
+
+def _current_personalization_context() -> str:
+    user_profile = cl.user_session.get("user_profile")
+    if isinstance(user_profile, UserProfile) and user_profile.topics:
+        return _build_personalization_prompt(user_profile)
+    return ""
+
+
+def _format_langflow_chat_history(messages: list[dict[str, Any]], *, max_messages: int = 12, max_chars: int = 6000) -> str:
+    rendered: list[str] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        content = item.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        rendered.append(f"{role.capitalize()}: {content.strip()}")
+    joined = "\n\n".join(rendered[-max_messages:])
+    if len(joined) <= max_chars:
+        return joined
+    return joined[-max_chars:]
+
+
+def _langflow_global_vars(messages: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        "SYSTEM_PROMPT": _effective_system_prompt(messages),
+        "CHAT_PROFILE": str(cl.user_session.get("chat_profile") or ""),
+        "CHAT_PROFILE_PROMPT": _current_chat_profile_prompt(),
+        "PERSONALIZATION_CONTEXT": _current_personalization_context(),
+        "CHAT_HISTORY": _format_langflow_chat_history(messages),
+    }
 
 
 def _current_chat_session_id() -> str | None:
@@ -1602,6 +1657,475 @@ def _build_citation_history_view(history: list[dict[str, Any]]) -> tuple[str | N
     return "\n".join(lines).strip(), merged_rows
 
 
+def _cited_source_numbers(text: str) -> set[int]:
+    numbers: set[int] = set()
+    if not isinstance(text, str) or not text.strip():
+        return numbers
+    for match in re.finditer(r"Quelle\s+(\d+)\s*:", text, flags=re.IGNORECASE):
+        numbers.add(int(match.group(1)))
+    for match in re.finditer(r"\[(\d+)\]", text):
+        numbers.add(int(match.group(1)))
+    for match in re.finditer(r"【(\d+)[^】]*】", text):
+        numbers.add(int(match.group(1)))
+    return numbers
+
+
+def _build_source_rows_from_results(
+    content: str,
+    last_results: list[Any],
+) -> tuple[
+    list[tuple[int, str, str, int | None, int | None, str | None, str]],
+    dict[int, str],
+    dict[int, str],
+    list[dict[str, Any]],
+]:
+    seen_links: set[tuple[str, int | None]] = set()
+    source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]] = []
+    alias_by_index: dict[int, str] = {}
+    url_by_index: dict[int, str] = {}
+    source_rows_for_session: list[dict[str, Any]] = []
+    alias_to_url: dict[str, str] = {}
+    desired_sources = _desired_source_count(content, len(last_results))
+    if MAX_SOURCE_LINKS > 0:
+        desired_sources = min(desired_sources, MAX_SOURCE_LINKS)
+    allowed_pdf_names = _allowed_source_pdf_names()
+    display_counter = 1
+
+    for idx, result in enumerate(last_results, start=1):
+        file_name = extract_source_file(result.metadata)
+        if not file_name:
+            continue
+        page = extract_page(result.metadata)
+        key = (file_name, page)
+        if key in seen_links:
+            existing_alias = next(
+                (
+                    alias
+                    for _, alias, fname, pstart, _, _, _ in source_rows
+                    if fname == file_name and pstart == page
+                ),
+                None,
+            )
+            if existing_alias:
+                alias_by_index[idx] = existing_alias
+                existing_url = alias_to_url.get(existing_alias)
+                if isinstance(existing_url, str) and existing_url:
+                    url_by_index[idx] = existing_url
+            continue
+        file_path = _resolve_source_pdf_path(file_name, allowed_pdf_names)
+        if file_path is None:
+            continue
+        page_end = result.metadata.get("page_end") if isinstance(result.metadata.get("page_end"), int) else None
+        section_title = _resolve_section_title(result.metadata)
+        page_start = extract_page(result.metadata)
+        alias = _source_alias(display_counter, section_title, page_start, page_end)
+        pdf_url = _source_pdf_url(file_name)
+        if isinstance(page, int):
+            pdf_url = f"{pdf_url}#page={page}"
+        evidence_snippet = _first_sentence(result.text)
+        alias_by_index[idx] = alias
+        url_by_index[idx] = pdf_url
+        alias_to_url[alias] = pdf_url
+        source_rows.append(
+            (
+                display_counter,
+                alias,
+                file_name,
+                page_start,
+                page_end,
+                section_title,
+                evidence_snippet,
+            )
+        )
+        source_rows_for_session.append(
+            {
+                "alias": alias,
+                "file": file_name,
+                "page": page,
+                "page_start": page_start if isinstance(page_start, int) else None,
+                "page_end": page_end if isinstance(page_end, int) else None,
+                "section": section_title if isinstance(section_title, str) else None,
+                "evidence": evidence_snippet if isinstance(evidence_snippet, str) else None,
+            }
+        )
+        display_counter += 1
+        seen_links.add(key)
+        if desired_sources and len(seen_links) >= desired_sources:
+            break
+
+    return source_rows, alias_by_index, url_by_index, source_rows_for_session
+
+
+def _build_source_rows_from_langflow_citations(
+    citations: list[dict[str, Any]],
+) -> tuple[
+    list[tuple[int, str, str, int | None, int | None, str | None, str]],
+    dict[int, str],
+    dict[int, str],
+    list[dict[str, Any]],
+]:
+    source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]] = []
+    alias_by_index: dict[int, str] = {}
+    url_by_index: dict[int, str] = {}
+    source_rows_for_session: list[dict[str, Any]] = []
+    allowed_pdf_names = _allowed_source_pdf_names()
+    seen_numbers: set[int] = set()
+
+    for fallback_number, raw in enumerate(citations, start=1):
+        if not isinstance(raw, dict):
+            continue
+        citation_number = raw.get("citation_number")
+        if not isinstance(citation_number, int) or citation_number < 1:
+            citation_number = fallback_number
+        if citation_number in seen_numbers:
+            continue
+
+        meta: dict[str, Any] = {}
+        for key in ("file", "page_start", "page_end"):
+            value = raw.get(key)
+            if isinstance(value, (str, int)):
+                meta[key] = value
+        section_title = raw.get("section_title")
+        if isinstance(section_title, str) and section_title.strip():
+            meta["section_title"] = section_title.strip()
+
+        file_name = extract_source_file(meta)
+        if not file_name:
+            file_value = raw.get("file")
+            file_name = file_value.strip().split("/")[-1] if isinstance(file_value, str) and file_value.strip() else None
+        if not file_name:
+            continue
+
+        file_path = _resolve_source_pdf_path(file_name, allowed_pdf_names)
+        if file_path is None:
+            continue
+
+        page_start = raw.get("page_start") if isinstance(raw.get("page_start"), int) else extract_page(meta)
+        page_end = raw.get("page_end") if isinstance(raw.get("page_end"), int) else None
+        section_title = (
+            raw.get("section_title").strip()
+            if isinstance(raw.get("section_title"), str) and raw.get("section_title").strip()
+            else _resolve_section_title(meta)
+        )
+        alias = _source_alias(citation_number, section_title, page_start, page_end)
+        pdf_url = _source_pdf_url(file_name)
+        if isinstance(page_start, int):
+            pdf_url = f"{pdf_url}#page={page_start}"
+
+        evidence = raw.get("evidence")
+        evidence_snippet = _first_sentence(evidence) if isinstance(evidence, str) else ""
+        alias_by_index[citation_number] = alias
+        url_by_index[citation_number] = pdf_url
+        source_rows.append(
+            (
+                citation_number,
+                alias,
+                file_name,
+                page_start,
+                page_end,
+                section_title,
+                evidence_snippet,
+            )
+        )
+        source_rows_for_session.append(
+            {
+                "alias": alias,
+                "file": file_name,
+                "page": page_start if isinstance(page_start, int) else None,
+                "page_start": page_start if isinstance(page_start, int) else None,
+                "page_end": page_end if isinstance(page_end, int) else None,
+                "section": section_title if isinstance(section_title, str) else None,
+                "evidence": evidence_snippet if evidence_snippet else None,
+            }
+        )
+        seen_numbers.add(citation_number)
+
+    return source_rows, alias_by_index, url_by_index, source_rows_for_session
+
+
+async def _finalize_assistant_reply(
+    *,
+    session_id: str,
+    messages: list[dict[str, Any]],
+    content: str,
+    source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]] | None = None,
+    source_rows_for_session: list[dict[str, Any]] | None = None,
+    alias_by_index: dict[int, str] | None = None,
+    url_by_index: dict[int, str] | None = None,
+) -> None:
+    content = _strip_model_source_blocks(content or "")
+    source_rows = list(source_rows or [])
+    source_rows_for_session = _sanitize_source_rows_payload(source_rows_for_session or [])
+    alias_by_index = dict(alias_by_index or {})
+    url_by_index = dict(url_by_index or {})
+
+    used_source_ids: list[int] = []
+    citation_panel_content: str | None = None
+
+    if source_rows:
+        session_source_catalog = _sanitize_source_catalog(cl.user_session.get("source_catalog"))
+        if not session_source_catalog.get("entries"):
+            session_source_catalog = _load_session_source_catalog(session_id)
+        source_catalog_changed = False
+        if _prune_source_catalog(
+            session_source_catalog,
+            _source_ids_from_citation_history(cl.user_session.get("citation_history")),
+        ):
+            source_catalog_changed = True
+        cl.user_session.set("source_catalog", session_source_catalog)
+
+        alias_by_number = _alias_number_map(source_rows)
+        url_by_number: dict[int, str] = {}
+        alias_to_url = {alias: url_by_index.get(idx) for idx, alias in alias_by_index.items()}
+        for src_idx, alias, *_ in source_rows:
+            alias_url = alias_to_url.get(alias)
+            if isinstance(alias_url, str) and alias_url:
+                if isinstance(src_idx, int):
+                    url_by_number[src_idx] = alias_url
+                number_match = re.match(r"^\s*Quelle\s+(\d+)\s*:", alias, flags=re.IGNORECASE)
+                if number_match:
+                    url_by_number[int(number_match.group(1))] = alias_url
+
+        alias_by_ref = {**alias_by_number, **alias_by_index}
+        url_by_ref = {**url_by_number, **url_by_index}
+
+        content = _inject_clickable_refs(
+            content,
+            alias_by_index,
+            alias_by_ref,
+            url_by_index,
+            url_by_ref,
+        )
+        content = _inject_named_source_refs(content, source_rows)
+        content = _inject_source_alias_links(content, alias_by_ref, url_by_ref)
+        content = _normalize_source_alias_mentions(content, alias_by_index, alias_by_ref)
+        content = _normalize_source_mentions_by_content(content, source_rows)
+        content = _inject_naked_source_links(content)
+
+        cited_aliases = set()
+        for _, alias, *_ in source_rows:
+            if not isinstance(alias, str) or not alias:
+                continue
+            escaped_alias = alias.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+            if alias in content or escaped_alias in content:
+                cited_aliases.add(alias)
+        if cited_aliases:
+            source_rows = [row for row in source_rows if row[1] in cited_aliases]
+            source_rows_for_session = [
+                row
+                for row in source_rows_for_session
+                if isinstance(row.get("alias"), str) and row["alias"] in cited_aliases
+            ]
+
+        resolved_source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]] = []
+        resolved_source_rows_for_session: list[dict[str, Any]] = []
+        for row, session_row in zip(source_rows, source_rows_for_session):
+            _, alias, file_name, page_start, page_end, section_title, evidence = row
+            source_id, _, catalog_changed = _register_source_in_catalog(
+                session_source_catalog,
+                file_name=file_name,
+                page_start=page_start if isinstance(page_start, int) else None,
+                page_end=page_end if isinstance(page_end, int) else None,
+                section_title=section_title if isinstance(section_title, str) else None,
+            )
+            if catalog_changed:
+                source_catalog_changed = True
+            resolved_source_rows.append(
+                (
+                    source_id,
+                    alias,
+                    file_name,
+                    page_start,
+                    page_end,
+                    section_title,
+                    evidence,
+                )
+            )
+            updated_session_row = dict(session_row)
+            updated_session_row["source_id"] = source_id
+            resolved_source_rows_for_session.append(updated_session_row)
+
+        source_rows = resolved_source_rows
+        source_rows_for_session = resolved_source_rows_for_session
+        content, source_rows, source_rows_for_session = _align_aliases_to_source_ids(
+            content,
+            source_rows,
+            source_rows_for_session,
+        )
+
+        if source_catalog_changed:
+            sanitized_catalog = _sanitize_source_catalog(session_source_catalog)
+            cl.user_session.set("source_catalog", sanitized_catalog)
+            _persist_session_source_catalog(session_id, sanitized_catalog)
+
+        used_source_ids = sorted(
+            {
+                source_id
+                for source_id, *_ in source_rows
+                if isinstance(source_id, int) and source_id > 0
+            }
+        )
+
+        content = _inject_alias_links_by_rows(content, source_rows_for_session)
+
+        box_lines: list[str] = []
+        if source_rows:
+            box_lines = ["## Quellen & Belegstellen", ""]
+            for visible_idx, (src_idx, alias, file_name, page_start, page_end, section_title, evidence) in enumerate(source_rows, start=1):
+                page_label = _page_label(page_start, page_end)
+                section_label = section_title or "Abschnitt unbekannt"
+                pdf_url = _source_pdf_url(file_name)
+                page_for_link = page_start if isinstance(page_start, int) else None
+                if isinstance(page_for_link, int):
+                    pdf_url = f"{pdf_url}#page={page_for_link}"
+                box_lines.append(f"### {alias}")
+                box_lines.append(f"- Datei: `{file_name}`")
+                box_lines.append(f"- PDF: [Öffnen]({pdf_url})")
+                if isinstance(src_idx, int) and src_idx > 0:
+                    box_lines.append(f"- Quellen-ID: {src_idx}")
+                else:
+                    box_lines.append(f"- Quellen-ID: {visible_idx}")
+                box_lines.append(f"- Seiten: {page_label}")
+                box_lines.append(f"- Abschnitt: {section_label}")
+                if evidence:
+                    box_lines.append(f"- Belegsnippet: \"{evidence}\"")
+                box_lines.append("")
+        detail_block = "\n".join(box_lines)
+        citation_panel_content = detail_block or None
+        if citation_panel_content:
+            cl.user_session.set("citation_panel_content", citation_panel_content)
+            cl.user_session.set("citation_source_rows", source_rows_for_session)
+            citation_history = _sanitize_citation_history(cl.user_session.get("citation_history"))
+            citation_history = _append_citation_history(
+                citation_history,
+                citation_panel_content,
+                source_rows_for_session,
+            )
+            cl.user_session.set("citation_history", citation_history)
+        else:
+            cl.user_session.set("citation_panel_content", None)
+            cl.user_session.set("citation_source_rows", [])
+    else:
+        cl.user_session.set("citation_panel_content", None)
+        cl.user_session.set("citation_source_rows", [])
+
+    content, followups = _extract_followups(content)
+    followup_questions = _sanitize_followup_questions(followups)
+    cl.user_session.set("followup_questions", followup_questions)
+
+    message_metadata: dict[str, Any] = {
+        "has_citations_panel": bool(citation_panel_content),
+        "followup_count": len(followup_questions),
+        "followup_questions": followup_questions,
+        "used_source_ids": used_source_ids,
+    }
+    if citation_panel_content:
+        message_metadata["citation_panel_content"] = citation_panel_content
+        message_metadata["citation_source_rows"] = _sanitize_source_rows_payload(source_rows_for_session)
+
+    assistant_reply = cl.Message(content=content, metadata=message_metadata)
+    actions = _build_chat_actions(
+        followup_questions=followup_questions,
+        has_citations_panel=bool(citation_panel_content),
+        source_step_id=assistant_reply.id,
+        citation_panel_content=citation_panel_content,
+        citation_source_rows=source_rows_for_session,
+    )
+    assistant_reply.actions = actions
+    print("[DEBUG] followup_actions=", len(followup_questions), "total_actions=", len(actions))
+    if citation_panel_content:
+        _cache_citation_panel_content(assistant_reply.id, citation_panel_content)
+        assistant_reply.elements = _build_citation_elements(
+            citation_panel_content,
+            source_rows_for_session,
+            citation_step_id=assistant_reply.id,
+        )
+
+    await assistant_reply.send()
+    if citation_panel_content:
+        history_panel_content, history_rows = _build_citation_history_view(
+            _sanitize_citation_history(cl.user_session.get("citation_history"))
+        )
+        use_history_sidebar = isinstance(history_panel_content, str) and history_panel_content.strip()
+        sidebar_content = history_panel_content if use_history_sidebar else citation_panel_content
+        sidebar_rows = history_rows if use_history_sidebar else source_rows_for_session
+        if "/sources/pdf/" not in sidebar_content:
+            sidebar_content = _append_source_links_to_panel(sidebar_content, sidebar_rows)
+        await _show_citation_sidebar(
+            sidebar_content,
+            sidebar_rows,
+            sidebar_title=(CITATION_HISTORY_SIDEBAR_TITLE if use_history_sidebar else CITATION_SIDEBAR_TITLE),
+        )
+
+    messages.append({"role": "assistant", "content": content})
+    add_chat_message(
+        CHAT_DB_PATH,
+        session_id,
+        "assistant",
+        content,
+        metadata=message_metadata,
+    )
+
+
+async def _handle_langflow_turn(message: cl.Message, messages: list[dict[str, Any]], session_id: str) -> bool:
+    history_messages = messages[:-1] if messages else []
+    try:
+        langflow_result = await run_langflow(
+            input_value=message.content,
+            session_id=session_id,
+            global_vars=_langflow_global_vars(history_messages),
+        )
+    except LangflowError as exc:
+        print(f"[WARN] langflow_error: {exc}")
+        await _finalize_assistant_reply(
+            session_id=session_id,
+            messages=messages,
+            content=(
+                "Langflow ist aktiviert, konnte diese Anfrage aber nicht verarbeiten.\n\n"
+                "Bitte pruefen Sie den Flow, die API-Konfiguration und die Langflow-Logs."
+            ),
+        )
+        return False
+
+    content = str(langflow_result.get("answer_text") or "").strip()
+    if not content:
+        print("[WARN] langflow_error: empty answer_text")
+        await _finalize_assistant_reply(
+            session_id=session_id,
+            messages=messages,
+            content=(
+                "Langflow ist aktiviert, hat aber keine Antwort zurueckgegeben.\n\n"
+                "Bitte pruefen Sie die Ausgabe des Flows in Langflow."
+            ),
+        )
+        return False
+
+    raw_citations = langflow_result.get("citations")
+    citations = raw_citations if isinstance(raw_citations, list) else []
+    source_rows, alias_by_index, url_by_index, source_rows_for_session = _build_source_rows_from_langflow_citations(citations)
+    cited_numbers = _cited_source_numbers(content)
+    missing_numbers = sorted(number for number in cited_numbers if number not in alias_by_index)
+    if missing_numbers:
+        print(f"[WARN] langflow_missing_citations: missing structured citations for numbers={missing_numbers}")
+        source_rows = []
+        alias_by_index = {}
+        url_by_index = {}
+        source_rows_for_session = []
+    if not source_rows and not _is_context_abstention(content):
+        print("[WARN] langflow_missing_citations: no usable citations returned")
+
+    await _finalize_assistant_reply(
+        session_id=session_id,
+        messages=messages,
+        content=content,
+        source_rows=source_rows,
+        source_rows_for_session=source_rows_for_session,
+        alias_by_index=alias_by_index,
+        url_by_index=url_by_index,
+    )
+    return True
+
+
 def _append_source_links_to_panel(panel_content: str, source_rows: list[dict[str, Any]]) -> str:
     if not isinstance(panel_content, str) or not panel_content.strip():
         return panel_content
@@ -2285,6 +2809,24 @@ async def ask_followup(action: cl.Action):
     await main(cl.Message(content=question))
 
 
+async def _maybe_update_profile() -> None:
+    if not PERSONALIZATION_ENABLED:
+        return
+    user_id = cl.user_session.get("current_user_id")
+    if not user_id:
+        return
+    try:
+        current_profile = cl.user_session.get("user_profile")
+        current_count = get_user_message_count(CHAT_DB_PATH, user_id)
+        profile_count = current_profile.message_count if current_profile else 0
+        if current_count >= PROFILE_MIN_MESSAGES and current_count - profile_count >= 10:
+            print(f"[DEBUG] triggering profile update for {user_id}, new_messages={current_count - profile_count}")
+            updated_profile = await update_user_profile(user_id)
+            cl.user_session.set("user_profile", updated_profile)
+    except Exception as e:
+        print(f"[WARN] profile_update_failed for user_id={user_id}: {e.__class__.__name__}: {e}")
+
+
 @cl.on_message
 async def main(message: cl.Message):
     if await _handle_control_message(message):
@@ -2300,6 +2842,13 @@ async def main(message: cl.Message):
     messages.append({"role": "user", "content": message.content})
     add_chat_message(CHAT_DB_PATH, session_id, "user", message.content)
     set_session_title_if_missing(CHAT_DB_PATH, session_id, _first_sentence(message.content, max_len=96))
+
+    if LANGFLOW_ENABLED:
+        langflow_ok = await _handle_langflow_turn(message, messages, session_id)
+        cl.user_session.set("messages", messages)
+        if langflow_ok:
+            await _maybe_update_profile()
+        return
 
     response = await chat(messages, tools=TOOLS, tool_choice="required")
     assistant_msg = response.choices[0].message
@@ -2822,19 +3371,4 @@ async def main(message: cl.Message):
 
     cl.user_session.set("messages", messages)
 
-    # Trigger background profile update if enough messages accumulated
-    if PERSONALIZATION_ENABLED:
-        user_id = cl.user_session.get("current_user_id")
-        if user_id:
-            try:
-                current_profile = cl.user_session.get("user_profile")
-                current_count = get_user_message_count(CHAT_DB_PATH, user_id)
-                profile_count = current_profile.message_count if current_profile else 0
-
-                # Update profile if 10+ new messages since last update
-                if current_count >= PROFILE_MIN_MESSAGES and current_count - profile_count >= 10:
-                    print(f"[DEBUG] triggering profile update for {user_id}, new_messages={current_count - profile_count}")
-                    updated_profile = await update_user_profile(user_id)
-                    cl.user_session.set("user_profile", updated_profile)
-            except Exception as e:
-                print(f"[WARN] profile_update_failed for user_id={user_id}: {e.__class__.__name__}: {e}")
+    await _maybe_update_profile()

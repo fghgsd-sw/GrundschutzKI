@@ -110,13 +110,32 @@ For native left sidebar history, keep these env vars set:
 - `CHAINLIT_AUTH_USERNAME`
 - `CHAINLIT_AUTH_PASSWORD`
 
-Optional Langflow agent tool:
+Optional Langflow routing:
 - `LANGFLOW_ENABLED=true`
 - `LANGFLOW_BASE_URL=http://langflow:7860` (Docker) or `http://localhost:7860` (local)
 - `LANGFLOW_FLOW_ID=<your_flow_id>`
 - `LANGFLOW_API_KEY=<optional_api_key>`
 
-When enabled, the LLM can call `langflow_agent` as an additional tool next to `rag_retrieve`.
+When enabled:
+- Chainlit bypasses the local `rag_retrieve` tool loop for user chat turns.
+- Langflow becomes responsible for retrieval + answer generation.
+- Chainlit still extracts `Anschlussfragen`, renders citations, persists chat state, and restores citation history on resume.
+- If Langflow is unavailable or returns unusable citation data, Chainlit falls back to the current LiteLLM + local `rag_retrieve` path for that turn.
+
+Langflow flow contract:
+- Return assistant text that already contains in-text citations like `Quelle 1: ... (S.x-y)`.
+- Return the final `Anschlussfragen:` block in the assistant text.
+- Return structured citation metadata that Chainlit can map into the current citation sidebar.
+
+Expected structured citation fields:
+- `citation_number`
+- `file`
+- `page_start`
+- `page_end`
+- `section_title`
+- `evidence`
+
+The flow can use returned source documents internally, but prose-only references are not enough to preserve the existing citation UI.
 
 Auto-ingestion controls (in `.env`):
 - `INGEST_DOCLING_JSON_DIR` (default `/data/data_docling_json_ocr`)
