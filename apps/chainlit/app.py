@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
-from uuid import uuid4
 
 import asyncpg
 import bcrypt
@@ -668,7 +667,12 @@ def _source_alias(source_number: int, section_title: str | None, page_start: int
     section = (section_title or "Abschnitt unbekannt").strip()
     section = re.sub(r"\s+", " ", section)
     if len(section) > 48:
-        section = section[:45].rstrip() + "..."
+        truncated = section[:45].rstrip()
+        # Drop back before any unmatched `[` so Chainlit's frontend can wrap
+        # the alias as a markdown link without the inner `[` breaking parsing.
+        if truncated.count("[") > truncated.count("]"):
+            truncated = truncated.rsplit("[", 1)[0].rstrip(" ,")
+        section = f"{truncated}..."
     return f"Quelle {source_number}: {section} ({_page_label(page_start, page_end)})"
 
 
@@ -718,9 +722,9 @@ def _inject_clickable_refs(
         alias = alias_by_index.get(idx) or (alias_by_number or {}).get(idx)
         if not alias:
             return match.group(0)
-        url = (url_by_index or {}).get(idx) or (url_by_number or {}).get(idx)
-        if isinstance(url, str) and url:
-            return _markdown_link(alias, url)
+        # Return the bare alias text so Chainlit's frontend can match it against an inline
+        # cl.Pdf element name and render it as a side-panel opener. Markdown wrapping
+        # would suppress that auto-detection and turn the citation into a new-tab link.
         return alias
 
     # Covers citations like: 【1†L1-L4】 and [1†L1-L4]
@@ -908,46 +912,160 @@ def _normalize_source_mentions_by_content(
     )
 
 
+# Anchored on the literal word "Quelle". Tolerates (a) optional **/__ decorators
+# around the span (stripped on replacement so Chainlit's frontend can wrap the
+# alias as a clickable anchor), and (b) a missing "N: " prefix (filled in from
+# the best-matching source_row alias). See the `_canonicalize_citations` docstring.
+_CITATION_CANONICAL_RE = re.compile(
+    r"(?P<pre>\*{1,2}|_{1,2})?"
+    r"\bQuelle\s+"
+    r"(?:(?P<num>\d+)\s*:\s*)?"
+    r"(?P<body>[^\n]{1,220}?)"
+    r"\((?:S\.?|Seite)\s*(?P<page>\d+)(?:\s*[-\u2013]\s*(?P<page_end>\d+))?\s*\)"
+    r"(?P<post>\*{1,2}|_{1,2})?",
+    flags=re.IGNORECASE,
+)
+
+_BSI_ID_RE = re.compile(r"[A-Z]{3,4}(?:\.\d+){1,3}(?:\.[ASH]\d+)?")
+
+
+def _canonicalize_citations(
+    text: str,
+    source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]],
+) -> str:
+    """Final-pass canonicalizer: every `Quelle ...(S.X)` span in ``text`` is
+    rewritten to the exact alias of the best-matching source_row, with any
+    adjacent stray bold/italic markers stripped.
+
+    Why this exists: Chainlit's frontend wires clicks to inline cl.Pdf elements
+    via strict ``name`` equality against substrings in the assistant content.
+    LLM output routinely deviates from the prescribed alias format in ways that
+    defeat that equality check — unmatched ``**`` around the token, or a
+    missing ``N: `` prefix. This pass is the single source of truth for
+    mapping any citation-shaped span back to a registered element name.
+
+    Scoring signals:
+        * page in [page_start, page_end]  -> +3
+        * BSI-ID appears verbatim in section -> +4
+        * any of first-5 section tokens appears in match text -> +2
+
+    Thresholds:
+        * numbered form (``Quelle 3: ...``) -> require best_score >= 2,
+          AND when best_score == 3 (pure page-range hit with no other
+          signal) require a corroborating signal: BSI-ID in section,
+          >= 1 section-token hit, OR the winning alias's ``Quelle N:``
+          prefix number matches the LLM-provided number. This prevents
+          silent mis-routing when multiple retrieved sources share a
+          page and the LLM-supplied title doesn't match either.
+        * numberless form (``Quelle APP.3.2 ...``) -> require best_score >= 5
+          AND either a BSI-ID match OR >= 2 section-token hits, to avoid
+          rewriting prose like "Die Quelle der Daten (S.10)".
+
+    Below-threshold matches are left unchanged (fails open). Idempotent when
+    the pipeline already agrees.
+    """
+    if not text or not source_rows:
+        return text
+
+    def norm(s: str) -> str:
+        s = s.lower()
+        s = re.sub(r"[^a-z0-9\u00e4\u00f6\u00fc\u00df]+", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    entries: list[dict[str, Any]] = []
+    for _, alias, _, page_start, page_end, section_title, _ in source_rows:
+        entries.append(
+            {
+                "alias": alias,
+                "section": norm(section_title or ""),
+                "page_start": page_start,
+                "page_end": page_end,
+            }
+        )
+
+    def repl(match: re.Match) -> str:
+        raw = match.group(0)
+        body = match.group("body") or ""
+        num_group = match.group("num")
+        wanted_page = int(match.group("page"))
+        # Score the full match text so pre/post decorators don't perturb token
+        # comparisons; the replacement below still consumes them.
+        rnorm = norm(raw)
+
+        bsi_match = _BSI_ID_RE.search(body)
+        bsi_id = bsi_match.group(0).lower() if bsi_match else None
+
+        best_alias: str | None = None
+        best_score = 0
+        best_section_token_hits = 0
+        best_bsi_hit = False
+        for entry in entries:
+            score = 0
+            section = entry["section"] or ""
+            start = entry["page_start"]
+            end = entry["page_end"] or start
+            if isinstance(start, int) and isinstance(end, int) and start <= wanted_page <= end:
+                score += 3
+            bsi_hit = bool(bsi_id and bsi_id in section)
+            if bsi_hit:
+                score += 4
+            section_tokens = section.split()[:5]
+            token_hits = sum(1 for tok in section_tokens if tok in rnorm)
+            if token_hits:
+                score += 2
+            if score > best_score:
+                best_score = score
+                best_alias = entry["alias"]
+                best_section_token_hits = token_hits
+                best_bsi_hit = bsi_hit
+
+        if not best_alias:
+            return raw
+
+        if num_group is None:
+            # Numberless form: demand strong signal to avoid rewriting prose.
+            if best_score < 5 or not (best_bsi_hit or best_section_token_hits >= 2):
+                print(
+                    f"[WARN] citation.unresolved (numberless) fragment={raw[:160]!r} "
+                    f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
+                )
+                return raw
+        else:
+            # A bare page-range hit (+3) alone is not enough. When two
+            # retrieved sources share a page and the LLM section title
+            # doesn't match either, the earlier entry wins the strict `>`
+            # tie-break and we'd silently rewrite `Quelle 3: ...` to the
+            # wrong alias. Require a corroborating signal in that case.
+            alias_num_match = re.match(
+                r"^\s*Quelle\s+(\d+)\s*:", best_alias, flags=re.IGNORECASE
+            )
+            alias_num_matches = bool(
+                alias_num_match and alias_num_match.group(1) == num_group
+            )
+            has_content_signal = (
+                best_bsi_hit or best_section_token_hits >= 1 or alias_num_matches
+            )
+            if best_score < 2 or (best_score == 3 and not has_content_signal):
+                print(
+                    f"[WARN] citation.unresolved fragment={raw[:160]!r} "
+                    f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
+                )
+                return raw
+
+        return best_alias
+
+    return _CITATION_CANONICAL_RE.sub(repl, text)
+
+
 def _inject_source_alias_links(
     text: str,
     alias_by_number: dict[int, str],
     url_by_number: dict[int, str],
 ) -> str:
-    if not text or not alias_by_number or not url_by_number:
-        return text
-
-    def repl_long(match: re.Match) -> str:
-        idx = int(match.group(1))
-        alias = alias_by_number.get(idx)
-        url = url_by_number.get(idx)
-        if not alias or not url:
-            return match.group(0)
-        return _markdown_link(alias, url)
-
-    # Link full alias mentions like:
-    # "Quelle 3: 3. Anforderungen (S.312-313)"
-    text = re.sub(
-        r"(?<!\[)\bQuelle\s*(\d+)\s*:\s*[^\n]*?\((?:S\.?|Seite)\s*[^)\n]+\)",
-        repl_long,
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    def repl_short(match: re.Match) -> str:
-        idx = int(match.group(1))
-        alias = alias_by_number.get(idx)
-        url = url_by_number.get(idx)
-        if not alias or not url:
-            return match.group(0)
-        return _markdown_link(alias, url)
-
-    # Link short mentions like: "Quelle 2"
-    text = re.sub(
-        r"(?<!\[)\bQuelle\s*(\d+)\b(?!\s*:)",
-        repl_short,
-        text,
-        flags=re.IGNORECASE,
-    )
+    # Intentionally a no-op: in-text "Quelle N: ..." mentions stay as bare alias text
+    # so Chainlit's frontend can match them against inline cl.Pdf element names and
+    # render them as side-panel openers. Wrapping them as markdown links would
+    # suppress that auto-detection and revert to opening the PDF in a new browser tab.
     return text
 
 
@@ -957,13 +1075,15 @@ def _inject_naked_source_links(text: str) -> str:
 
     def repl(match: re.Match) -> str:
         label = match.group("label")
-        url = match.group("url")
-        if not isinstance(label, str) or not isinstance(url, str):
+        if not isinstance(label, str):
             return match.group(0)
-        return _markdown_link(label, url)
+        # Strip the trailing "(/sources/pdf/...)" segment so the alias remains as bare
+        # text — Chainlit's frontend will then match it against an inline cl.Pdf element
+        # name and render it as a side-panel opener instead of a new-tab link.
+        return label
 
     return re.sub(
-        r"(?P<label>Quelle\s*\d+\s*:[^\n]{1,260}?\((?:S\.?|Seite)\s*[^)\n]+\))\((?P<url>(?:https?://[^\s)]+|/sources/pdf/[^)\s]+))\)",
+        r"(?P<label>Quelle\s*\d+\s*:[^\n]{1,260}?\((?:S\.?|Seite)\s*[^)\n]+\))\((?:https?://[^\s)]+|/sources/pdf/[^)\s]+)\)",
         repl,
         text,
         flags=re.IGNORECASE,
@@ -1085,27 +1205,12 @@ def _align_aliases_to_source_ids(
 
 
 def _inject_alias_links_by_rows(text: str, source_rows: list[dict[str, Any]]) -> str:
-    if not text:
-        return text
-    rows = _sanitize_source_rows_payload(source_rows)
-    if not rows:
-        return text
-
-    # Replace longer aliases first to avoid partial replacements.
-    ordered = sorted(rows, key=lambda row: len(str(row.get("alias") or "")), reverse=True)
-    linked = text
-    for row in ordered:
-        alias = row.get("alias")
-        file_name = row.get("file")
-        if not isinstance(alias, str) or not alias.strip() or not isinstance(file_name, str) or not file_name.strip():
-            continue
-        page = row.get("page_start") if isinstance(row.get("page_start"), int) else row.get("page")
-        pdf_url = _source_pdf_url(file_name)
-        if isinstance(page, int):
-            pdf_url = f"{pdf_url}#page={page}"
-        pattern = rf"(?<!\[){re.escape(alias)}(?!\]\()"
-        linked = re.sub(pattern, _markdown_link(alias, pdf_url), linked)
-    return linked
+    # Intentionally a no-op: aliases stay as bare text in the message body so Chainlit's
+    # frontend can match them against inline cl.Pdf element names and render them as
+    # side-panel openers. The previous final-pass markdown wrapping is what made
+    # citations open in a new browser tab; that behaviour is now replaced by inline
+    # PDF elements attached to the assistant message in main()/on_chat_resume.
+    return text
 
 
 def _desired_source_count(text: str, available: int) -> int:
@@ -1656,6 +1761,41 @@ def _build_citation_elements(
     return elements
 
 
+def _build_inline_pdf_elements(source_rows: list[dict[str, Any]] | None) -> list[Any]:
+    """Build one cl.Pdf element per cited source so Chainlit's frontend can match the
+    bare alias text in the assistant message and open the PDF in the right side panel.
+    De-dup is on alias because the alias is what appears in the message body."""
+    elements: list[Any] = []
+    if not source_rows:
+        return elements
+    seen: set[str] = set()
+    for row in source_rows:
+        if not isinstance(row, dict):
+            continue
+        alias = row.get("alias")
+        file_name = row.get("file")
+        if not isinstance(alias, str) or not alias.strip():
+            continue
+        if not isinstance(file_name, str) or not file_name.strip():
+            continue
+        if alias in seen:
+            continue
+        if _resolve_source_pdf_path(file_name) is None:
+            continue  # silently skip files outside DATA_RAW_DIR allowlist
+        seen.add(alias)
+        page = row.get("page_start") if isinstance(row.get("page_start"), int) else row.get("page")
+        page_int = page if isinstance(page, int) else 1
+        elements.append(
+            cl.Pdf(
+                name=alias,
+                url=_source_pdf_url(file_name),
+                page=page_int,
+                display="side",
+            )
+        )
+    return elements
+
+
 def _sanitize_followup_questions(raw_followups: Any, *, max_items: int = 8) -> list[str]:
     if not isinstance(raw_followups, list):
         return []
@@ -1922,6 +2062,10 @@ async def on_chat_resume(thread: dict[str, Any]):
     restored_citation_history: list[dict[str, Any]] = []
     latest_assistant_step_id: str | None = None
     latest_assistant_has_actions = False
+    # Per-step citation metadata so "Quellen anzeigen" can be restored on
+    # every historical assistant step, not just the latest one. See the
+    # loop below and the comment block in the assistant_message branch.
+    historical_citation_steps: list[dict[str, Any]] = []
     if SYSTEM_PROMPT:
         messages.append({"role": "system", "content": SYSTEM_PROMPT})
 
@@ -1941,10 +2085,14 @@ async def on_chat_resume(thread: dict[str, Any]):
             if text:
                 messages.append({"role": "assistant", "content": text})
             step_id = step.get("id")
+            normalized_step_id: str | None = None
+            step_has_actions = False
             if isinstance(step_id, str) and step_id.strip():
+                normalized_step_id = step_id
                 latest_assistant_step_id = step_id
                 step_actions = step.get("actions")
-                latest_assistant_has_actions = isinstance(step_actions, list) and len(step_actions) > 0
+                step_has_actions = isinstance(step_actions, list) and len(step_actions) > 0
+                latest_assistant_has_actions = step_has_actions
             metadata = _coerce_step_metadata(step)
             panel_content = metadata.get("citation_panel_content")
             source_rows = metadata.get("citation_source_rows")
@@ -1954,6 +2102,30 @@ async def on_chat_resume(thread: dict[str, Any]):
             valid_rows = _sanitize_source_rows_payload(source_rows)
             if valid_rows:
                 restored_source_rows = valid_rows
+            # Do NOT reattach inline cl.Pdf(display="side") elements on resume.
+            # Chainlit pops the side panel whenever a display="side" element is
+            # emitted (and 2.11+ codifies this in MessagesContainer), so
+            # reattaching per-source PDFs on every resumed message would force
+            # an unrequested sidebar open. Historical messages therefore render
+            # `Quelle N:` references as plain text; the per-step "Quellen
+            # anzeigen" action (restored below for EVERY historical step with
+            # citation metadata, not just the latest) is the on-demand path
+            # for citations in old answers. Fresh answers in the same session
+            # still attach inline PDFs in the hot path, so the inline button
+            # behavior is preserved for newly-rendered messages.
+            if (
+                normalized_step_id
+                and isinstance(panel_content, str)
+                and panel_content.strip()
+            ):
+                historical_citation_steps.append(
+                    {
+                        "step_id": normalized_step_id,
+                        "has_actions": step_has_actions,
+                        "panel_content": panel_content,
+                        "source_rows": valid_rows,
+                    }
+                )
             restored_citation_history = _append_citation_history(
                 restored_citation_history,
                 panel_content if isinstance(panel_content, str) else None,
@@ -1979,22 +2151,12 @@ async def on_chat_resume(thread: dict[str, Any]):
         cl.user_session.set("citation_panel_content", panel_with_links)
         citation_panel_for_actions = panel_with_links
 
-    history_panel_content, history_rows = _build_citation_history_view(restored_citation_history)
-    if isinstance(history_panel_content, str) and history_panel_content.strip():
-        history_panel_with_links = history_panel_content
-        if "/sources/pdf/" not in history_panel_with_links:
-            history_panel_with_links = _append_source_links_to_panel(history_panel_content, history_rows)
-        await _show_citation_sidebar(
-            history_panel_with_links,
-            history_rows,
-            sidebar_title=CITATION_HISTORY_SIDEBAR_TITLE,
-        )
-    elif isinstance(citation_panel_for_actions, str) and citation_panel_for_actions.strip():
-        await _show_citation_sidebar(
-            citation_panel_for_actions,
-            [],
-            sidebar_title=CITATION_SIDEBAR_TITLE,
-        )
+    # Intentionally do NOT auto-open the citation sidebar on resume.
+    # Chainlit's ElementSidebar.set_title / set_elements force-open the sidebar
+    # as a side effect of populating it, which pops an unrequested panel every
+    # time the user returns to a chat. The sidebar is still reachable on demand
+    # via the per-step "Quellen anzeigen" action (restored below) and via the
+    # inline cl.Pdf buttons on each cited source.
 
     if not latest_assistant_has_actions:
         await _restore_actions_for_step(
@@ -2004,6 +2166,30 @@ async def on_chat_resume(thread: dict[str, Any]):
             citation_panel_content=citation_panel_for_actions,
             citation_source_rows=citation_source_rows_for_actions,
         )
+
+    # Restore per-step "Quellen anzeigen" actions on every HISTORICAL
+    # assistant step that had a citation panel but no persisted actions.
+    # The latest step is handled above with the full action set (including
+    # followups). Followups are intentionally omitted for older steps —
+    # clicking a followup from mid-history would inject it into the current
+    # conversation in a confusing order.
+    for entry in historical_citation_steps:
+        if entry["step_id"] == latest_assistant_step_id:
+            continue
+        if entry["has_actions"]:
+            continue
+        await _restore_actions_for_step(
+            entry["step_id"],
+            followup_questions=[],
+            has_citations_panel=True,
+            citation_panel_content=entry["panel_content"],
+            citation_source_rows=entry["source_rows"],
+        )
+
+    # Defensive: if anything in the restore path opened the side panel,
+    # close it. Chainlit maps set_sidebar_elements([]) to setSideView(undefined)
+    # on the frontend, so this is a safe idempotent no-op when already closed.
+    await cl.ElementSidebar.set_elements([], key="citations_panel")
 
 
 @cl.set_chat_profiles
@@ -2095,7 +2281,12 @@ async def on_settings_update(settings: dict[str, Any]):
 async def on_chat_start():
     existing_session_id = cl.user_session.get("chat_history_session_id")
     resume_session_id = existing_session_id if isinstance(existing_session_id, str) and existing_session_id.strip() else None
-    session_id = resume_session_id or str(uuid4())
+    # Use Chainlit's own thread_id (set by the websocket session before on_chat_start
+    # fires and reused by on_chat_resume as thread["id"]) so our SQLite session_id
+    # stays aligned with Chainlit's Postgres thread_id. Otherwise a fresh uuid4()
+    # here would orphan our source_catalog whenever the user leaves and returns
+    # to the chat — resume would look up an empty row and restart numbering at 1.
+    session_id = resume_session_id or cl.context.session.thread_id
     resumed_session = resume_session_id is not None
 
     # Get authenticated user ID if available
@@ -2281,8 +2472,15 @@ async def ask_followup(action: cl.Action):
     question = payload.get("question")
     if not isinstance(question, str) or not question.strip():
         return
-    await cl.Message(content=question, author="You", type="user_message").send()
-    await main(cl.Message(content=question))
+    user_msg = cl.Message(content=question, author="You", type="user_message")
+    await user_msg.send()
+    # Wrap main() in a Step(type='run', ...) so the resulting assistant
+    # message is attached to a scorable run, matching what @cl.on_message
+    # does internally. Without this, Chainlit's frontend gates copy +
+    # thumbs on the absent `scorableRun` and hides them on the new answer.
+    async with cl.Step(name="on_message", type="run", parent_id=user_msg.id) as run_step:
+        run_step.input = question
+        await main(cl.Message(content=question))
 
 
 @cl.on_message
@@ -2293,7 +2491,9 @@ async def main(message: cl.Message):
     messages = cl.user_session.get("messages") or []
     session_id = _current_chat_session_id()
     if not session_id:
-        session_id = str(uuid4())
+        # Defensive fallback — should normally already be set by on_chat_start or
+        # on_chat_resume. Use Chainlit's thread_id so we don't orphan the catalog.
+        session_id = cl.context.session.thread_id
         create_chat_session(CHAT_DB_PATH, session_id)
         cl.user_session.set("chat_history_session_id", session_id)
 
@@ -2673,6 +2873,16 @@ async def main(message: cl.Message):
             source_rows_for_session,
         )
 
+        # Final canonicalization: every "Quelle ...(S.X)" span in the content is
+        # rewritten to an exact element-name alias, and any adjacent stray **/__
+        # decorators are stripped. Handles LLM deviations the upstream chain
+        # cannot repair: orphan bold wrappers (e.g. "**Quelle 1: ... (S.X)" with
+        # no closing "**") and the numberless form ("Quelle APP.3.2 ... (S.X)").
+        # Chainlit's frontend uses strict substring equality against element
+        # names, so any residual divergence silently kills the click handler.
+        # This pass is idempotent when the pipeline already agrees.
+        content = _canonicalize_citations(content, source_rows)
+
         if source_catalog_changed:
             sanitized_catalog = _sanitize_source_catalog(session_source_catalog)
             cl.user_session.set("source_catalog", sanitized_catalog)
@@ -2765,6 +2975,12 @@ async def main(message: cl.Message):
                 citation_step_id=assistant_reply.id,
             )
             assistant_reply.elements = panel_elements
+
+        # Attach one inline cl.Pdf element per cited source so clicking the alias text
+        # in the message body opens the PDF in the right side panel instead of a new tab.
+        inline_pdf_elements = _build_inline_pdf_elements(source_rows_for_session)
+        if inline_pdf_elements:
+            assistant_reply.elements = (assistant_reply.elements or []) + inline_pdf_elements
 
         await assistant_reply.send()
         if citation_panel_content:
