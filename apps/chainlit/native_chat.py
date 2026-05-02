@@ -432,42 +432,42 @@ async def export_feedback_csv(
 
     conn = await asyncpg.connect(database_url)
     try:
-                rows = await conn.fetch(
-                        """
-                        SELECT
-                            u.identifier AS username,
-                            COALESCE(user_q.output, user_q.input) AS user_question,
-                            COALESCE(child.output, child.input, s.output, s.input) AS assistant_answer,
-                            f.value AS feedback_value,
-                            f.comment AS feedback_comment,
-                            s."createdAt" AS answer_time,
-                            t.id AS thread_id,
-                            f.id AS feedback_id,
-                            f."stepId" AS step_id
-                        FROM "Feedback" f
-                        JOIN "Step" s ON s.id = f."stepId"
-                        JOIN "Thread" t ON t.id = s."threadId"
-                        LEFT JOIN "User" u ON u.id = t."userId"
-                        LEFT JOIN LATERAL (
-                                SELECT cs.output, cs.input
-                                FROM "Step" cs
-                                WHERE cs."parentId" = s.id
-                                    AND cs.type = 'assistant_message'
-                                ORDER BY cs."startTime" DESC
-                                LIMIT 1
-                        ) child ON true
-                        LEFT JOIN LATERAL (
-                                SELECT qs.output, qs.input
-                                FROM "Step" qs
-                                WHERE qs."threadId" = s."threadId"
-                                    AND qs.type = 'user_message'
-                                    AND qs."startTime" < s."startTime"
-                                ORDER BY qs."startTime" DESC
-                                LIMIT 1
-                        ) user_q ON true
-                        ORDER BY s."createdAt" DESC
-                        """
-                )
+        rows = await conn.fetch(
+            """
+            SELECT
+                u.identifier AS username,
+                COALESCE(user_q.output, user_q.input) AS user_question,
+                COALESCE(child.output, child.input, s.output, s.input) AS assistant_answer,
+                f.value AS feedback_value,
+                f.comment AS feedback_comment,
+                s."createdAt" AS answer_time,
+                t.id AS thread_id,
+                f.id AS feedback_id,
+                f."stepId" AS step_id
+            FROM "Feedback" f
+            JOIN "Step" s ON s.id = f."stepId"
+            JOIN "Thread" t ON t.id = s."threadId"
+            LEFT JOIN "User" u ON u.id = t."userId"
+            LEFT JOIN LATERAL (
+                SELECT cs.output, cs.input
+                FROM "Step" cs
+                WHERE cs."parentId" = s.id
+                    AND cs.type = 'assistant_message'
+                ORDER BY cs."startTime" DESC
+                LIMIT 1
+            ) child ON true
+            LEFT JOIN LATERAL (
+                SELECT qs.output, qs.input
+                FROM "Step" qs
+                WHERE qs."threadId" = s."threadId"
+                    AND qs.type = 'user_message'
+                    AND qs."startTime" < s."startTime"
+                ORDER BY qs."startTime" DESC
+                LIMIT 1
+            ) user_q ON true
+            ORDER BY s."createdAt" DESC
+            """
+        )
 
         fieldnames = [
             "username",

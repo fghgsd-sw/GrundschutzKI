@@ -52,7 +52,6 @@ a[href*="/sources/pdf/"]:hover {
 /* ── Self-registration form ──────────────────────────────── */
 #gski-register-panel {
   width: 100%;
-  max-width: 400px;
   margin: 16px auto 0;
   text-align: center;
 }
