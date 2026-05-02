@@ -57,19 +57,19 @@
         '<span>Noch kein Konto? </span>' +
         '<a href="#" id="gski-reg-toggle-link">Registrieren</a>' +
       "</div>" +
-      '<div id="gski-reg-form" style="display:none">' +
+      '<form id="gski-reg-form" style="display:none">' +
         '<h3 style="margin:0 0 12px">Konto erstellen</h3>' +
         '<input id="gski-reg-user" type="text" placeholder="Benutzername (mind. 3 Zeichen)" autocomplete="username" />' +
         '<input id="gski-reg-email" type="email" placeholder="E-Mail-Adresse" autocomplete="email" />' +
         '<input id="gski-reg-pw" type="password" placeholder="Passwort (mind. 8 Zeichen)" autocomplete="new-password" />' +
         '<input id="gski-reg-pw2" type="password" placeholder="Passwort wiederholen" autocomplete="new-password" />' +
-        '<button id="gski-reg-submit" type="button">Registrieren</button>' +
+        '<button id="gski-reg-submit" type="submit">Registrieren</button>' +
         '<div id="gski-reg-msg" style="display:none"></div>' +
         '<div class="gski-reg-toggle" style="margin-top:12px">' +
           '<span>Bereits registriert? </span>' +
           '<a href="#" id="gski-reg-back-link">Zum Login</a>' +
         "</div>" +
-      "</div>";
+      "</form>";
     return panel;
   }
 
@@ -99,7 +99,8 @@
       if (loginForm) loginForm.style.display = "";
     });
 
-    submitBtn.addEventListener("click", function () {
+    regForm.addEventListener("submit", function (e) {
+      e.preventDefault();
       var user = panel.querySelector("#gski-reg-user").value.trim();
       var email = panel.querySelector("#gski-reg-email").value.trim();
       var pw = panel.querySelector("#gski-reg-pw").value;
@@ -126,30 +127,41 @@
         body: JSON.stringify({ username: user, email: email, password: pw }),
       })
         .then(function (res) {
+          // Try to parse JSON, fall back to text, always resolve
           return res.json().then(function (data) {
-            return { ok: res.ok, status: res.status, data: data };
+            return { ok: res.ok, status: res.status, data: data, text: undefined };
+          }).catch(function () {
+            return res.text().then(function (txt) {
+              var parsed = undefined;
+              try {
+                parsed = txt && JSON.parse(txt);
+              } catch (e) {}
+              return { ok: res.ok, status: res.status, data: parsed, text: txt || undefined };
+            });
           });
         })
         .then(function (result) {
           submitBtn.disabled = false;
           submitBtn.textContent = "Registrieren";
           if (result.ok) {
-            showMsg(result.data.message || "Registrierung erfolgreich! Du kannst dich jetzt einloggen.", true);
+            showMsg((result.data && result.data.message) || "Registrierung erfolgreich! Du kannst dich jetzt einloggen.", true);
             /* Clear form fields */
             panel.querySelector("#gski-reg-user").value = "";
             panel.querySelector("#gski-reg-email").value = "";
             panel.querySelector("#gski-reg-pw").value = "";
             panel.querySelector("#gski-reg-pw2").value = "";
             /* If email verification is required, keep the message visible longer */
-            var delay = result.data.email_verification_required ? 8000 : 2500;
+            var delay = result.data && result.data.email_verification_required ? 8000 : 2500;
             /* Switch back to login after delay */
             setTimeout(function () {
               backLink.click();
             }, delay);
           } else {
-            var detail = result.data.detail;
+            var detail = result.data && result.data.detail;
             if (Array.isArray(detail)) detail = detail.map(function(d) { return d.msg || JSON.stringify(d); }).join(", ");
-            else if (typeof detail === "object") detail = JSON.stringify(detail);
+            else if (typeof detail === "object" && detail !== null) detail = JSON.stringify(detail);
+            // If no detail, try plain text
+            if (!detail && result.text) detail = result.text;
             showMsg(detail || "Registrierung fehlgeschlagen.", false);
           }
         })

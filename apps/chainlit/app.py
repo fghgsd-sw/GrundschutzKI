@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import random
@@ -1727,8 +1728,7 @@ def _append_citation_history(
         if key in seen:
             continue
         seen.add(key)
-        deduped.append(item)
-    return deduped[-max_entries:]
+        deduped.append
 
 
 def _build_citation_history_view(history: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
@@ -2103,10 +2103,25 @@ async def on_app_startup() -> None:
         if exists["email_exists"]:
             raise HTTPException(status_code=409, detail="E-Mail-Adresse bereits registriert")
 
-        # Create user with hashed password
-        password_hash = _hash_password(password)
 
-        if EMAIL_VERIFICATION_ENABLED and SMTP_HOST:
+        # SMTP-Konfiguration prüfen, wenn E-Mail-Verifizierung aktiviert ist
+        if EMAIL_VERIFICATION_ENABLED:
+            smtp_config_ok = all([
+                SMTP_HOST,
+                SMTP_PORT,
+                SMTP_USER,
+                SMTP_PASSWORD,
+                SMTP_FROM,
+            ])
+            try:
+                int(SMTP_PORT)
+            except Exception:
+                smtp_config_ok = False
+            if not smtp_config_ok:
+                raise HTTPException(status_code=503, detail="E-Mail-Verifizierung ist aktiviert, aber SMTP-Konfiguration ist unvollständig. Registrierung nicht möglich.")
+
+            # Nutzer anlegen (noch nicht bestätigt)
+            password_hash = _hash_password(password)
             token = secrets.token_urlsafe(32)
             user = await create_user(
                 DATABASE_URL, username, email, password_hash,
@@ -2118,9 +2133,12 @@ async def on_app_startup() -> None:
                 await _send_verification_email(email, username, token)
             except Exception as exc:
                 print(f"[ERROR] verification email failed: {exc}")
+                # Rollback: Nutzer wieder löschen
+                from native_chat import delete_user_by_email
+                await delete_user_by_email(DATABASE_URL, email)
                 raise HTTPException(
                     status_code=500,
-                    detail="Registrierung gespeichert, aber Bestätigungs-E-Mail konnte nicht gesendet werden. Bitte kontaktiere den Administrator.",
+                    detail="Registrierung abgebrochen, da Bestätigungs-E-Mail nicht gesendet werden konnte. Bitte kontaktiere den Administrator.",
                 )
             return {
                 "message": "Registrierung erfolgreich! Bitte bestätige deine E-Mail-Adresse über den zugesandten Link.",
@@ -2128,6 +2146,8 @@ async def on_app_startup() -> None:
                 "email_verification_required": True,
             }
         else:
+            # E-Mail-Verifizierung nicht aktiv: Nutzer direkt anlegen
+            password_hash = _hash_password(password)
             user = await create_user(
                 DATABASE_URL, username, email, password_hash,
                 email_verified=True,
@@ -2150,10 +2170,11 @@ async def on_app_startup() -> None:
                 "</body></html>",
                 status_code=400,
             )
+        escaped_identifier = html.escape(result['identifier'])
         return fastapi.responses.HTMLResponse(
             content="<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
             f"<h2>E-Mail bestätigt!</h2>"
-            f"<p>Hallo <b>{result['identifier']}</b>, dein Konto ist jetzt aktiv.</p>"
+            f"<p>Hallo <b>{escaped_identifier}</b>, dein Konto ist jetzt aktiv.</p>"
             f'<p><a href="{APP_BASE_URL}">Jetzt einloggen</a></p>'
             "</body></html>",
             status_code=200,
