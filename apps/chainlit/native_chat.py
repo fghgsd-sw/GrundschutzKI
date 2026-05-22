@@ -203,6 +203,48 @@ async def check_user_exists(
         await conn.close()
 
 
+async def upsert_feedback(
+    database_url: str,
+    *,
+    feedback_id: str,
+    step_id: str,
+    value: float,
+    comment: str | None = None,
+) -> None:
+    """Insert or update a feedback row in the Feedback table.
+
+    Uses a unique constraint on ``stepId`` so that repeated clicks on the
+    same step always update the existing row instead of creating duplicates.
+    """
+    import uuid as _uuid
+
+    conn = await asyncpg.connect(database_url)
+    try:
+        # Ensure the unique index exists (idempotent).
+        await conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS "Feedback_stepId_unique"
+            ON "Feedback" ("stepId")
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO "Feedback" (id, "stepId", name, value, comment)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT ("stepId") DO UPDATE
+              SET value   = EXCLUDED.value,
+                  comment = EXCLUDED.comment
+            """,
+            _uuid.UUID(feedback_id),
+            _uuid.UUID(step_id),
+            "user-feedback",
+            value,
+            comment,
+        )
+    finally:
+        await conn.close()
+
+
 async def export_all_chats_zip(
     *,
     database_url: str,
@@ -331,3 +373,85 @@ async def export_all_chats_zip(
         zf.write(jsonl_path, arcname=jsonl_path.name)
         zf.write(csv_path, arcname=csv_path.name)
     return zip_path
+
+
+async def export_feedback_csv(
+    *,
+    database_url: str,
+    out_dir: Path,
+) -> Path:
+    """Export all feedback rows joined with question, answer and user as CSV."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / f"feedback-export-{_stamp()}.csv"
+
+    conn = await asyncpg.connect(database_url)
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT
+              u.identifier                  AS username,
+              user_q.output                 AS user_question,
+              COALESCE(child.output, s.output) AS assistant_answer,
+              f.value                       AS feedback_value,
+              f.comment                     AS feedback_comment,
+              s."createdAt"                 AS answer_time,
+              t.id                          AS thread_id,
+              f.id                          AS feedback_id,
+              f."stepId"                    AS step_id
+            FROM "Feedback" f
+            JOIN "Step" s   ON s.id = f."stepId"
+            JOIN "Thread" t ON t.id = s."threadId"
+            LEFT JOIN "User" u ON u.id = t."userId"
+            LEFT JOIN LATERAL (
+                SELECT cs.output
+                FROM "Step" cs
+                WHERE cs."parentId" = s.id
+                  AND cs.type = 'assistant_message'
+                ORDER BY cs."startTime" DESC
+                LIMIT 1
+            ) child ON true
+            LEFT JOIN LATERAL (
+                SELECT qs.output
+                FROM "Step" qs
+                WHERE qs."threadId" = s."threadId"
+                  AND qs.type = 'user_message'
+                  AND qs."startTime" < s."startTime"
+                ORDER BY qs."startTime" DESC
+                LIMIT 1
+            ) user_q ON true
+            ORDER BY s."createdAt" DESC
+            """
+        )
+
+        fieldnames = [
+            "username",
+            "user_question",
+            "assistant_answer",
+            "feedback_value",
+            "feedback_comment",
+            "answer_time",
+            "thread_id",
+            "feedback_id",
+            "step_id",
+        ]
+        with csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {
+                        "username": row["username"] or "",
+                        "user_question": row["user_question"] or "",
+                        "assistant_answer": row["assistant_answer"] or "",
+                        "feedback_value": row["feedback_value"] if row["feedback_value"] is not None else "",
+                        "feedback_comment": row["feedback_comment"] or "",
+                        "answer_time": row["answer_time"].isoformat() if row["answer_time"] else "",
+                        "thread_id": str(row["thread_id"]) if row["thread_id"] else "",
+                        "feedback_id": str(row["feedback_id"]) if row["feedback_id"] else "",
+                        "step_id": str(row["step_id"]) if row["step_id"] else "",
+                    }
+                )
+    finally:
+        await conn.close()
+
+    return csv_path

@@ -1,4 +1,14 @@
 /* Make action buttons roomier and allow long follow-up questions to remain readable. */
+[data-testid="message-actions"],
+[data-testid="actions"],
+.message-actions,
+[class*="message-actions"] {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  clear: both;
+}
+
 [data-testid="message-actions"] button,
 [data-testid="actions"] button,
 .message-actions button,
