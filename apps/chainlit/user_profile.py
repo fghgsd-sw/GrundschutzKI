@@ -30,6 +30,16 @@ from settings import (
 )
 
 
+def _kw_key(value: str) -> str:
+    """Normalization key for case-insensitive keyword dedup.
+
+    Folds Unicode hyphen variants (NON-BREAKING HYPHEN U+2011, EN DASH U+2013)
+    to the regular hyphen-minus U+002D before lowercasing, so that
+    'IT‑Grundschutz' and 'IT-Grundschutz' compare equal.
+    """
+    return value.lower().replace("‑", "-").replace("–", "-")
+
+
 @dataclass
 class UserProfile:
     """Represents extracted user profile for personalization."""
@@ -65,7 +75,7 @@ class UserProfile:
             v = k.get("value")
             if not v:
                 continue
-            lc = v.lower()
+            lc = _kw_key(v)
             if lc in seen:
                 continue
             seen.add(lc)
@@ -206,8 +216,8 @@ async def update_user_profile(
     # Merge: keep manual keywords, replace auto keywords (manual takes precedence on duplicate value)
     existing_keywords = existing.get("keywords", []) if existing else []
     manual_keywords = [k for k in existing_keywords if k.get("source") == "manual"]
-    manual_values = {k["value"].lower() for k in manual_keywords if k.get("value")}
-    deduped_auto = [k for k in auto_keywords if k.get("value") and k["value"].lower() not in manual_values]
+    manual_values = {_kw_key(k["value"]) for k in manual_keywords if k.get("value")}
+    deduped_auto = [k for k in auto_keywords if k.get("value") and _kw_key(k["value"]) not in manual_values]
     merged_keywords = manual_keywords + deduped_auto
 
     # Embed all active keyword values for similarity matching
@@ -310,8 +320,8 @@ async def regenerate_keywords(
 
     # Extract fresh topics from history
     topics, auto_keywords = await extract_user_topics(user_id, db, force=True)
-    manual_values = {k["value"].lower() for k in manual_keywords if k.get("value")}
-    deduped_auto = [k for k in auto_keywords if k.get("value") and k["value"].lower() not in manual_values]
+    manual_values = {_kw_key(k["value"]) for k in manual_keywords if k.get("value")}
+    deduped_auto = [k for k in auto_keywords if k.get("value") and _kw_key(k["value"]) not in manual_values]
     merged_keywords = manual_keywords + deduped_auto
 
     # Embed all active keyword values

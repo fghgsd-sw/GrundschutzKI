@@ -62,6 +62,7 @@ from settings import (
     TOP_K,
 )
 from user_profile import (
+    _kw_key,
     load_user_profile,
     regenerate_keywords,
     update_keyword_embeddings,
@@ -639,11 +640,12 @@ async def _handle_control_message(message: cl.Message) -> bool:
             if not user_profile:
                 user_profile = UserProfile(user_id=user_id or "anonymous")
             # Check for duplicates
-            existing_values = {k["value"].lower() for k in user_profile.keywords}
-            if sub_arg.lower() in existing_values:
+            existing_values = {_kw_key(k["value"]) for k in user_profile.keywords}
+            if _kw_key(sub_arg) in existing_values:
                 # Reactivate if deactivated
+                target_key = _kw_key(sub_arg)
                 for kw in user_profile.keywords:
-                    if kw["value"].lower() == sub_arg.lower():
+                    if _kw_key(kw["value"]) == target_key:
                         kw["active"] = True
                 await cl.Message(content=f"Schlüsselwort **{sub_arg}** aktiviert.").send()
             else:
@@ -656,10 +658,10 @@ async def _handle_control_message(message: cl.Message) -> bool:
 
         if sub_cmd == "remove" and sub_arg:
             if user_profile:
-                target = sub_arg.lower()
+                target = _kw_key(sub_arg)
                 removed = False
                 for kw in user_profile.keywords:
-                    if kw["value"].lower() == target:
+                    if _kw_key(kw["value"]) == target:
                         if kw.get("source") == "manual":
                             user_profile.keywords.remove(kw)
                         else:
@@ -2563,11 +2565,11 @@ async def on_settings_update(settings: dict[str, Any]):
         old_active = set(user_profile.active_keyword_values())
         new_active = set(new_tag_values)
 
-        # Index existing keywords (incl. inactive) by lowercased value so a
+        # Index existing keywords (incl. inactive) by normalized value so a
         # re-typed value reactivates the existing entry instead of creating a
-        # duplicate manual one.
+        # duplicate manual one. Folds Unicode hyphen variants too.
         existing_by_lc = {
-            (k.get("value") or "").lower(): k
+            _kw_key(k["value"]): k
             for k in user_profile.keywords
             if k.get("value")
         }
@@ -2575,17 +2577,17 @@ async def on_settings_update(settings: dict[str, Any]):
         # Tags added → reactivate existing or create manual keyword
         added = new_active - old_active
         for value in added:
-            existing = existing_by_lc.get(value.lower())
+            existing = existing_by_lc.get(_kw_key(value))
             if existing is not None:
                 existing["active"] = True
             else:
                 user_profile.keywords.append({"value": value, "active": True, "source": "manual"})
 
-        # Tags removed → deactivate (case-insensitive match)
+        # Tags removed → deactivate (normalized match)
         removed = old_active - new_active
-        removed_lc = {v.lower() for v in removed}
+        removed_lc = {_kw_key(v) for v in removed}
         for kw in user_profile.keywords:
-            if (kw.get("value") or "").lower() in removed_lc:
+            if kw.get("value") and _kw_key(kw["value"]) in removed_lc:
                 kw["active"] = False
 
         # Re-embed if changes occurred
