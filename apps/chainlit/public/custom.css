@@ -42,3 +42,9 @@ a[href*="/sources/pdf/"]:hover {
   color: #163a5a !important;
   text-decoration: underline;
 }
+
+/* ── Auto-height multiline textareas in settings ─────────── */
+[data-testid="chat-settings-sidebar-content"] textarea {
+  overflow: hidden !important;
+  resize: none !important;
+}

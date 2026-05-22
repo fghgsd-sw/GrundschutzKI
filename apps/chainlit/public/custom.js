@@ -47,3 +47,34 @@
   window.addEventListener("load", ensureHint);
   ensureHint();
 })();
+
+/* ── Auto-resize multiline TextInput fields in settings panel ── */
+(function () {
+  function autoResize(textarea) {
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = textarea.scrollHeight + "px";
+    textarea.style.overflow = "hidden";
+  }
+
+  function processAllTextareas() {
+    /* Target textareas inside the settings sidebar */
+    var sidebar = document.querySelector('[data-testid="chat-settings-sidebar-content"]');
+    if (!sidebar) return;
+    var areas = sidebar.querySelectorAll("textarea");
+    areas.forEach(function (ta) {
+      autoResize(ta);
+      if (!ta.dataset.gskiAutoResize) {
+        ta.dataset.gskiAutoResize = "1";
+        ta.addEventListener("input", function () { autoResize(ta); });
+      }
+    });
+  }
+
+  var observer = new MutationObserver(function () {
+    processAllTextareas();
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  window.addEventListener("load", processAllTextareas);
+})();
