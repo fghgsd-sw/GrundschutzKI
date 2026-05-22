@@ -2289,7 +2289,7 @@ def _build_chat_settings(
             id="regenerate_keywords",
             label="Schlüsselwörter-Aktion",
             description="Schlüsselwörter aus dem Chatverlauf neu extrahieren",
-            values=["– Keine Aktion –", "Jetzt neu generieren"],
+            values=["- Keine Aktion -", "Jetzt neu generieren"],
             initial_index=0,
         ),
         TextInput(
@@ -2364,7 +2364,11 @@ async def on_settings_update(settings: dict[str, Any]):
         changed_parts.append(f"Personalisierung → **{label}**")
 
     # --- Handle keyword tags changes ---
-    if "active_keywords" in settings:
+    # Skip the reconcile pass when the user also requested a full regenerate in
+    # the same settings update: regenerate_keywords rebuilds the whole list, so
+    # the tag-diff would otherwise mark unrelated entries as "deactivated".
+    regen_requested = settings.get("regenerate_keywords") == "Jetzt neu generieren"
+    if "active_keywords" in settings and not regen_requested:
         new_tag_values: list[str] = settings.get("active_keywords") or []
         if user_profile is None:
             user_profile = UserProfile(user_id=user_id or "anonymous")
@@ -2373,15 +2377,29 @@ async def on_settings_update(settings: dict[str, Any]):
         old_active = set(user_profile.active_keyword_values())
         new_active = set(new_tag_values)
 
-        # Tags added → create manual keywords
+        # Index existing keywords (incl. inactive) by lowercased value so a
+        # re-typed value reactivates the existing entry instead of creating a
+        # duplicate manual one.
+        existing_by_lc = {
+            (k.get("value") or "").lower(): k
+            for k in user_profile.keywords
+            if k.get("value")
+        }
+
+        # Tags added → reactivate existing or create manual keyword
         added = new_active - old_active
         for value in added:
-            user_profile.keywords.append({"value": value, "active": True, "source": "manual"})
+            existing = existing_by_lc.get(value.lower())
+            if existing is not None:
+                existing["active"] = True
+            else:
+                user_profile.keywords.append({"value": value, "active": True, "source": "manual"})
 
-        # Tags removed → deactivate
+        # Tags removed → deactivate (case-insensitive match)
         removed = old_active - new_active
+        removed_lc = {v.lower() for v in removed}
         for kw in user_profile.keywords:
-            if kw.get("value") in removed:
+            if (kw.get("value") or "").lower() in removed_lc:
                 kw["active"] = False
 
         # Re-embed if changes occurred

@@ -58,8 +58,19 @@ class UserProfile:
         return [k for k in self.keywords if k.get("active", True)]
 
     def active_keyword_values(self) -> list[str]:
-        """Return values of active keywords."""
-        return [k["value"] for k in self.active_keywords() if k.get("value")]
+        """Return values of active keywords, deduplicated case-insensitively."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for k in self.active_keywords():
+            v = k.get("value")
+            if not v:
+                continue
+            lc = v.lower()
+            if lc in seen:
+                continue
+            seen.add(lc)
+            out.append(v)
+        return out
 
 
 TOPIC_EXTRACTION_PROMPT = """Analysiere die folgenden Benutzeranfragen an einen IT-Grundschutz-Chatbot und extrahiere die Hauptthemen, für die sich der Benutzer interessiert.
@@ -192,10 +203,12 @@ async def update_user_profile(
     # Extract topics via LLM
     topics, auto_keywords = await extract_user_topics(user_id, db, force=True)
 
-    # Merge: keep manual keywords, replace auto keywords
+    # Merge: keep manual keywords, replace auto keywords (manual takes precedence on duplicate value)
     existing_keywords = existing.get("keywords", []) if existing else []
     manual_keywords = [k for k in existing_keywords if k.get("source") == "manual"]
-    merged_keywords = manual_keywords + auto_keywords
+    manual_values = {k["value"].lower() for k in manual_keywords if k.get("value")}
+    deduped_auto = [k for k in auto_keywords if k.get("value") and k["value"].lower() not in manual_values]
+    merged_keywords = manual_keywords + deduped_auto
 
     # Embed all active keyword values for similarity matching
     active_values = [k["value"] for k in merged_keywords if k.get("active", True) and k.get("value")]
@@ -297,7 +310,9 @@ async def regenerate_keywords(
 
     # Extract fresh topics from history
     topics, auto_keywords = await extract_user_topics(user_id, db, force=True)
-    merged_keywords = manual_keywords + auto_keywords
+    manual_values = {k["value"].lower() for k in manual_keywords if k.get("value")}
+    deduped_auto = [k for k in auto_keywords if k.get("value") and k["value"].lower() not in manual_values]
+    merged_keywords = manual_keywords + deduped_auto
 
     # Embed all active keyword values
     active_values = [k["value"] for k in merged_keywords if k.get("active", True) and k.get("value")]

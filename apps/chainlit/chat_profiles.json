@@ -42,7 +42,7 @@
       "name": "Leitung IT-Betrieb",
       "icon": "/public/icons/server.svg",
       "description": "Leitung des IT-Betriebs mit strategischer und operativer Verantwortung",
-      "markdown_description": "Als **Leitung IT-Betrieb** erhalten Sie Antworten mit Fokus auf:\n- IT-Infrastruktur und Architektur\n- Ressourcenplanung und Budgetierung\n- Betriebsmodelle und Outsorcing\n- IT-Service-Management\n- Technische Sicherheitskonzepte",
+      "markdown_description": "Als **Leitung IT-Betrieb** erhalten Sie Antworten mit Fokus auf:\n- IT-Infrastruktur und Architektur\n- Ressourcenplanung und Budgetierung\n- Betriebsmodelle und Outsourcing\n- IT-Service-Management\n- Technische Sicherheitskonzepte",
       "relevant_bausteine": ["ORP", "OPS", "NET", "SYS", "INF"],
       "relevant_topics": [
         "IT-Infrastruktur",
@@ -52,7 +52,7 @@
         "Monitoring",
         "IT-Service-Management"
       ],
-      "prompt_context": "Du antwortest einer Person in der Rolle Leitung IT-Betrieb. Fokussiere auf IT-Infrastruktur, strategische IT-Planung, Ressourcenmanagement, Betriebsmodelle und Outsorcing und Service-Management. Berücksichtige sowohl technische als auch organisatorische Aspekte."
+      "prompt_context": "Du antwortest einer Person in der Rolle Leitung IT-Betrieb. Fokussiere auf IT-Infrastruktur, strategische IT-Planung, Ressourcenmanagement, Betriebsmodelle und Outsourcing und Service-Management. Berücksichtige sowohl technische als auch organisatorische Aspekte."
     },
     {
       "id": "it_durchfuehrung",
