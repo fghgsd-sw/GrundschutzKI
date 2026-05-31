@@ -51,7 +51,7 @@ def load_llm_config() -> LLMConfig:
     model = os.getenv("LLM_MODEL") or _require(os.getenv("GPT_OSS_120B_MODEL"), "GPT_OSS_120B_MODEL")
     embedding_model = _require(os.getenv("EMBEDDING_MODEL"), "EMBEDDING_MODEL")
     return LLMConfig(
-        api_base=os.getenv("LITELLM_API_BASE"),
+        api_base=os.getenv("LITELLM_BASE_URL"),
         api_key=os.getenv("LITELLM_API_KEY"),
         model=model,
         embedding_model=embedding_model,

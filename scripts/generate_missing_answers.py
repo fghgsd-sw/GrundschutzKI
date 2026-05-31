@@ -71,7 +71,7 @@ Wenn der Kontext die Frage nicht beantwortet, sage das ehrlich."""
 def get_llm_config(llm_model: str = LLM_MODEL) -> LLMConfig:
     """Get LLM configuration."""
     return LLMConfig(
-        api_base=os.getenv("LITELLM_API_BASE"),
+        api_base=os.getenv("LITELLM_BASE_URL"),
         api_key=os.getenv("LITELLM_API_KEY"),
         model=f"openai/{llm_model}",
         embedding_model=EMBEDDING_MODEL,

@@ -4,25 +4,25 @@ Evaluation script for generating CSV files with LLM answers and RAGAS metrics.
 This script runs a full RAG evaluation pipeline on the IT-Grundschutz question-answer dataset,
 generating both a CSV with all results and a README documenting the experiment configuration.
 
-Usage from Jupyter notebook:
+Usage as CLI:
+    python scripts/run_evaluation.py \\
+        --llm openai/gpt-oss-120b \\
+        --embedding-model openai/BAAI/bge-m3 \\
+        --input-data-description "XML Kompendium 2023, char-based chunking (4000/200)" \\
+        --chunk-size 4000 --chunk-overlap 200 --top-k 5 \\
+        --temperature 0.2 \\
+        --output-name gpt-oss_kompendium-xml
+
+Usage as library (e.g. from a notebook):
     from scripts.run_evaluation import generate_evaluation_results
-    
-    generate_evaluation_results(
-        llm="openai/gpt-oss-120b",
-        embedding_model="openai/octen-embedding-8b",
-        input_data_description="XML Kompendium 2023, character-based chunking (4000 chars, 200 overlap)",
-        chunk_size=4000,
-        chunk_overlap=200,
-        top_k=5,
-        output_name="gpt-oss_kompendium-xml",
-        temperature=0.2,
-    )
+    generate_evaluation_results(llm=..., embedding_model=..., ...)
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import random
+import re
 import statistics
 import sys
 from dataclasses import dataclass
@@ -106,35 +106,47 @@ def _retrieve_contexts(
     return [res.payload.get("text", "") for res in results]
 
 
+SYSTEM_MD_PATH = PROJECT_ROOT / "system.md"
+
+FOLLOWUP_SPLIT_RE = re.compile(r"\n\s*\**\s*Anschlussfragen:\s*\**\s*\n", re.IGNORECASE)
+FOLLOWUP_ITEM_RE = re.compile(r"^\s*\d+\.\s+.+\?\s*$", re.MULTILINE)
+
+
+def _load_system_prompt(path: Path = SYSTEM_MD_PATH) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _strip_followups(text: str) -> tuple[str, str]:
+    """Split an answer at the 'Anschlussfragen:' header.
+
+    Returns (main_part, followups_block). If no header is found, the entire
+    text is returned as main_part and followups_block is empty.
+    """
+    if not text:
+        return "", ""
+    parts = FOLLOWUP_SPLIT_RE.split(text, maxsplit=1)
+    if len(parts) == 2:
+        return parts[0].rstrip(), parts[1].strip()
+    return text.strip(), ""
+
+
+def _count_followups(followups_block: str) -> int:
+    if not followups_block:
+        return 0
+    return len(FOLLOWUP_ITEM_RE.findall(followups_block))
+
+
 def _build_messages(
     question: str,
     contexts: List[str],
-    fewshot: List[dict],
+    system_prompt: str,
 ) -> List[dict]:
-    """Build chat messages for the LLM with few-shot examples and context."""
+    """Build chat messages for the LLM using the production system prompt."""
     context_text = "\n\n".join(contexts)
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Beantworte die Frage kurz, präzise und nutze ausschließlich den gelieferten Kontext! "
-                "Antworte auf Deutsch. Die Antwort sollte maximal 2 Sätze lang sein."
-            ),
-        },
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Frage: {question}\n\nKontext:\n{context_text}"},
     ]
-
-    for ex in fewshot:
-        messages.append({
-            "role": "user",
-            "content": f"Frage: {ex['question']}\n\nKontext:\n<BEISPIEL-KONTEXT>",
-        })
-        messages.append({"role": "assistant", "content": ex["answer"]})
-
-    messages.append({
-        "role": "user",
-        "content": f"Frage: {question}\n\nKontext:\n{context_text}",
-    })
-    return messages
 
 
 def _generate_answer(
@@ -174,13 +186,13 @@ async def _score_row_async(
             )
             faithfulness = await scorers["faithfulness"].ascore(
                 user_input=row["question"],
-                response=row["answer"],
+                response=row["answer_main"],
                 retrieved_contexts=row["contexts"],
             )
             answer_correctness = await scorers["answer_correctness"].ascore(
                 user_input=row["question"],
-                response=row["answer"],
-                reference=row["ground_truth_answer"],
+                response=row["answer_main"],
+                reference=row["ground_truth_answer_main"],
             )
             
             return {
@@ -205,7 +217,7 @@ async def _run_ragas_evaluation(
     records: List[dict],
     llm_cfg: LLMConfig,
     temperature: float,
-    concurrency: int = 10,
+    concurrency: int = 2,
 ) -> List[dict]:
     """Run RAGAS evaluation on all records."""
     # Import RAGAS dependencies
@@ -310,6 +322,13 @@ Generated on: {timestamp}
 | Top-K Retrieval | {config.top_k} |
 
 ## RAGAS Evaluation Metrics
+
+> **Hinweis:** `faithfulness` und `answer_correctness` werden auf dem
+> **Hauptteil** der Antwort berechnet – der Anschlussfragen-Block
+> (ab `Anschlussfragen:`) wird vor dem Scoring abgetrennt, da Folgefragen
+> nicht aus dem Retrieval-Kontext belegbar sind und nicht semantisch mit
+> der Referenzantwort übereinstimmen müssen. Die Folgefragen werden
+> separat durch Fach-Experten bewertet.
 
 | Metric | Average | Min | Max | Std Dev |
 |--------|---------|-----|-----|---------|
@@ -445,7 +464,7 @@ def generate_evaluation_results(
     
     # Load LLM and VectorDB config from environment
     llm_cfg = LLMConfig(
-        api_base=os.getenv("LITELLM_API_BASE"),
+        api_base=os.getenv("LITELLM_BASE_URL"),
         api_key=os.getenv("LITELLM_API_KEY"),
         model=config.llm,
         embedding_model=config.embedding_model,
@@ -454,36 +473,48 @@ def generate_evaluation_results(
     qdrant_client = get_qdrant_client(vec_cfg)
     collection_name = vec_cfg.collection or "grundschutz_xml"
     
-    # Prepare few-shot example from first row
-    first_row = df.iloc[0]
-    fewshot = [{"question": first_row["Frage"], "answer": first_row["Antwort"]}]
-    
-    # Build records for all questions (skip first row used for few-shot)
+    # Load production system prompt (system.md)
+    system_prompt = _load_system_prompt()
+    print(f"Loaded system prompt: {SYSTEM_MD_PATH} ({len(system_prompt)} chars)")
+
+    # Prefer v2-production ground truth column if present (regenerated answers
+    # aligned with system.md format). Falls back to legacy 'Antwort' column.
+    truth_col = "Antwort_v2_production" if "Antwort_v2_production" in df.columns else "Antwort"
+    print(f"Using ground truth column: {truth_col}")
+
+    # Build records for all questions (skip first row to keep historical row-count parity)
     print("Retrieving contexts and generating answers...")
     records = []
-    
+
     for idx, row in df.iloc[1:].iterrows():
         question = row["Frage"]
-        ground_truth_answer = row["Antwort"]
+        ground_truth_answer = row[truth_col]
         ground_truth_context = row["Fundstellen im IT-Grundschutz-Kompendium 2023"]
-        
-        # Retrieve contexts
+
         contexts = _retrieve_contexts(
             question, config.top_k, qdrant_client, collection_name, llm_cfg
         )
-        
-        # Build messages and generate answer
-        messages = _build_messages(question, contexts, fewshot)
+
+        messages = _build_messages(question, contexts, system_prompt)
         answer = _generate_answer(messages, llm_cfg, config.temperature, config.seed)
-        
+
+        answer_main, answer_followups = _strip_followups(answer)
+        gt_main, gt_followups = _strip_followups(ground_truth_answer)
+
         records.append({
             "question": question,
             "answer": answer,
+            "answer_main": answer_main,
+            "answer_followups": answer_followups,
+            "followup_count_generated": _count_followups(answer_followups),
             "contexts": contexts,
             "ground_truth_answer": ground_truth_answer,
+            "ground_truth_answer_main": gt_main,
+            "ground_truth_followups": gt_followups,
+            "followup_count_truth": _count_followups(gt_followups),
             "ground_truth_context": ground_truth_context,
         })
-        
+
         if (idx) % 10 == 0:
             print(f"  Processed {idx}/{len(df)-1} questions...")
     
@@ -500,8 +531,13 @@ def generate_evaluation_results(
         intermediate_records.append({
             "Frage": record["question"],
             "Antwort": record["ground_truth_answer"],
+            "Antwort (Hauptteil)": record["ground_truth_answer_main"],
             "Fundstellen": record["ground_truth_context"],
             "Generierte Antwort": record["answer"],
+            "Generierte Antwort (Hauptteil)": record["answer_main"],
+            "Generierte Anschlussfragen": record["answer_followups"],
+            "followup_count_generated": record["followup_count_generated"],
+            "followup_count_truth": record["followup_count_truth"],
             "Ermittelte Fundstellen": "\n".join(record["contexts"]),
         })
     intermediate_df = pd.DataFrame(intermediate_records)
@@ -547,8 +583,13 @@ def generate_evaluation_results(
         csv_records.append({
             "Frage": record["question"],
             "Antwort": record["ground_truth_answer"],
+            "Antwort (Hauptteil)": record["ground_truth_answer_main"],
             "Fundstellen": record["ground_truth_context"],
             "Generierte Antwort": record["answer"],
+            "Generierte Antwort (Hauptteil)": record["answer_main"],
+            "Generierte Anschlussfragen": record["answer_followups"],
+            "followup_count_generated": record["followup_count_generated"],
+            "followup_count_truth": record["followup_count_truth"],
             "Ermittelte Fundstellen": "\n".join(record["contexts"]),
             "context_precision": score["context_precision"],
             "context_recall": score["context_recall"],
@@ -589,7 +630,53 @@ def generate_evaluation_results(
     return csv_path
 
 
+def _build_arg_parser() -> "argparse.ArgumentParser":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the full RAG evaluation pipeline (retrieval + answer generation + "
+            "RAGAS scoring) on the IT-Grundschutz QA dataset."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--llm", required=True,
+                        help="LLM model identifier, e.g. 'openai/gpt-oss-120b'")
+    parser.add_argument("--embedding-model", required=True,
+                        help="Embedding model identifier, e.g. 'openai/BAAI/bge-m3'")
+    parser.add_argument("--input-data-description", required=True,
+                        help="Free-text description of input data / preprocessing")
+    parser.add_argument("--chunk-size", type=int, required=True,
+                        help="Chunk size (characters) used during ingestion")
+    parser.add_argument("--chunk-overlap", type=int, required=True,
+                        help="Chunk overlap (characters) used during ingestion")
+    parser.add_argument("--top-k", type=int, required=True,
+                        help="Number of chunks to retrieve per question")
+    parser.add_argument("--output-name", required=True,
+                        help="Base name for output files (CSV/README) — no extension")
+    parser.add_argument("--temperature", type=float, required=True,
+                        help="LLM temperature for answer generation")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
+    parser.add_argument(
+        "--eval-csv-path",
+        default="data/data_evaluation/GSKI_Fragen-Antworten-Fundstellen2.csv",
+        help="Path to evaluation CSV (relative to project root or absolute)",
+    )
+    return parser
+
+
 if __name__ == "__main__":
-    # Example usage when run directly
-    print("This script is intended to be imported and called from a Jupyter notebook.")
-    print("See notebooks/02_run_evaluation_example.ipynb for usage examples.")
+    args = _build_arg_parser().parse_args()
+    generate_evaluation_results(
+        llm=args.llm,
+        embedding_model=args.embedding_model,
+        input_data_description=args.input_data_description,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        top_k=args.top_k,
+        output_name=args.output_name,
+        temperature=args.temperature,
+        seed=args.seed,
+        eval_csv_path=args.eval_csv_path,
+    )
