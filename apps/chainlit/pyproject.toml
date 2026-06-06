@@ -12,4 +12,6 @@ dependencies = [
     "openai-harmony>=0.0.1",
     "docling>=1.5.0",
     "bcrypt>=4.1.0",
+    "pypdfium2>=4.0.0",
+    "numpy>=1.26.0",
 ]

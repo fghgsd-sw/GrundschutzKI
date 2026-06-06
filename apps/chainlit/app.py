@@ -46,6 +46,7 @@ from native_chat import (
     upsert_feedback,
 )
 from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve
+from upload_handler import EphemeralDoc, process_upload, search_ephemeral
 from settings import (
     CHAT_DB_PATH,
     CHAT_EXPORT_DIR,
@@ -2917,6 +2918,31 @@ async def main(message: cl.Message):
     if await _handle_control_message(message):
         return
 
+    # Process any uploaded files into ephemeral session context
+    if message.elements:
+        ephemeral_docs: list[EphemeralDoc] = cl.user_session.get("ephemeral_docs") or []
+        new_files: list[str] = []
+        for el in message.elements:
+            if not getattr(el, "path", None):
+                continue
+            try:
+                docs = await process_upload(
+                    file_path=el.path,
+                    file_name=getattr(el, "name", Path(el.path).name),
+                    mime=getattr(el, "mime", None),
+                )
+                ephemeral_docs.extend(docs)
+                new_files.append(getattr(el, "name", Path(el.path).name))
+            except Exception as exc:
+                await cl.Message(
+                    content=f"Datei konnte nicht verarbeitet werden: {exc}"
+                ).send()
+        if new_files:
+            cl.user_session.set("ephemeral_docs", ephemeral_docs)
+            await cl.Message(
+                content=f"**{', '.join(new_files)}** wurde als Sitzungskontext hinzugefügt ({len(ephemeral_docs)} Abschnitte)."
+            ).send()
+
     messages = cl.user_session.get("messages") or []
     session_id = _current_chat_session_id()
     if not session_id:
@@ -3023,6 +3049,14 @@ async def main(message: cl.Message):
                             query=query,
                             top_k=top_k,
                         )
+
+                        # Merge ephemeral session docs if present
+                        ephemeral_docs = cl.user_session.get("ephemeral_docs") or []
+                        if ephemeral_docs:
+                            from llm import embed as _embed
+                            q_emb = (await _embed([query]))[0]
+                            ephemeral_hits = search_ephemeral(q_emb, ephemeral_docs, top_k=3)
+                            results = ephemeral_hits + results
                         print(
                             "[DEBUG] rag_retrieve",
                             "hits=",
