@@ -43,6 +43,12 @@ a[href*="/sources/pdf/"]:hover {
   text-decoration: underline;
 }
 
+/* ── PDF sidebar iframe: full panel width ────────────────── */
+iframe[src*="/sources/pdf/"] {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
 /* ── Auto-height multiline textareas in settings ─────────── */
 [data-testid="chat-settings-sidebar-content"] textarea {
   overflow: hidden !important;

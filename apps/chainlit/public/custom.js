@@ -48,6 +48,44 @@
   ensureHint();
 })();
 
+/* ── PDF viewer: default to page-width zoom in sidebar ── */
+(function () {
+  function fixPdfZoom(iframe) {
+    var src = iframe.getAttribute("src") || "";
+    if (!src.includes("/sources/pdf/")) return;
+    if (src.includes("zoom=page-width")) return;
+    var newSrc = src.includes("#") ? src + "&zoom=page-width" : src + "#zoom=page-width";
+    iframe.setAttribute("src", newSrc);
+  }
+
+  function scanAll() {
+    document.querySelectorAll("iframe").forEach(fixPdfZoom);
+  }
+
+  var observer = new MutationObserver(function (mutations) {
+    mutations.forEach(function (m) {
+      if (m.type === "attributes" && m.target.tagName === "IFRAME") {
+        fixPdfZoom(m.target);
+      }
+      m.addedNodes.forEach(function (node) {
+        if (!node || node.nodeType !== 1) return;
+        if (node.tagName === "IFRAME") fixPdfZoom(node);
+        if (node.querySelectorAll) node.querySelectorAll("iframe").forEach(fixPdfZoom);
+      });
+    });
+  });
+
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["src"],
+  });
+
+  window.addEventListener("load", scanAll);
+  scanAll();
+})();
+
 /* ── Auto-resize multiline TextInput fields in settings panel ── */
 (function () {
   function autoResize(textarea) {
