@@ -245,14 +245,41 @@ python export_chats.py --format jsonl
 python export_chats.py --format csv
 ```
 
-## 8) Useful env knobs
+## 8) Document upload (session context)
+
+Users can attach documents (PDF, TXT, MD, CSV) via the paperclip icon in the chat input. The document is used as **session context** — its full text is injected into every LLM call for the duration of the session.
+
+**Use case:** Upload a company description or infrastructure overview, then ask IT-Grundschutz questions tailored to your situation. The LLM answers from the Grundschutz knowledge base, informed by your uploaded document.
+
+**Supported formats:**
+- PDF with embedded text layer (scanned PDFs without OCR are rejected with an error message)
+- Plain text, Markdown, CSV
+
+**Limits:**
+- Max file size: 50 MB (Chainlit frontend)
+- Max extracted text per session: 30,000 characters (~15–20 pages)
+- Longer documents are truncated with a `[... Dokument gekürzt ...]` notice
+
+**Storage and cleanup:**
+- PDFs are temporarily copied to `.files/uploads/<session_id>/` for serving via `/sources/upload/`
+- Files are deleted automatically when the chat session ends (`on_chat_end`)
+- The endpoint `/sources/upload/` requires authentication
+
+**Security note:** Access to uploaded files is authenticated but not user-scoped — any logged-in user who knows the session UUID can access the file. For multi-tenant deployments with sensitive documents, add user-to-session ownership validation in `app.py`.
+
+**Env knobs:**
+- Upload serving directory: `.files/uploads/` (hardcoded, relative to `apps/chainlit`)
+
+## 9) Useful env knobs
 
 - `TOP_K` retrieval size
 - `MAX_SOURCE_LINKS` limits how many PDF source links are shown (default `8`)
+- `SCORE_THRESHOLD` minimum similarity score for RAG results (default `0.4`)
+- `CHAT_TEMPERATURE` LLM temperature (default `0.0`)
 - `DATA_RAW_DIR` is the source directory for PDFs served via `/sources/pdf/{file_name}`
 - `STARTER_QUESTIONS` for Chainlit starter prompts (`||` separated)
 
-## 9) Troubleshooting
+## 10) Troubleshooting
 
 - **`Connection refused` to Qdrant**  
   Qdrant not running or wrong `QDRANT_URL`.
@@ -275,3 +302,9 @@ python export_chats.py --format csv
 
 - **`404 Source PDF not found` on `/sources/pdf/...`**  
   Ensure the requested filename exists as a `.pdf` directly under `DATA_RAW_DIR`.
+
+- **Uploaded PDF produces no context / error "kein eingebetteter Text"**  
+  The PDF is a scan without a text layer. Re-export with OCR (e.g. Adobe Acrobat, `ocrmypdf`) before uploading.
+
+- **Upload context not used in follow-up questions**  
+  Context persists for the entire session. Start a new chat session if the upload was in a previous thread.

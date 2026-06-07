@@ -48,42 +48,40 @@
   ensureHint();
 })();
 
-/* ── PDF viewer: default to page-width zoom in sidebar ── */
+/* ── PDF.js viewer: trigger page-width scale on load ─────── */
 (function () {
-  function fixPdfZoom(iframe) {
-    var src = iframe.getAttribute("src") || "";
-    if (!src.includes("/sources/pdf/")) return;
-    if (src.includes("zoom=page-width")) return;
-    var newSrc = src.includes("#") ? src + "&zoom=page-width" : src + "#zoom=page-width";
-    iframe.setAttribute("src", newSrc);
+  var triggered = false;
+
+  function applyPageWidth() {
+    // PDF.js viewer application API (available when viewer is active)
+    var app = window.PDFViewerApplication;
+    if (app && app.pdfViewer) {
+      app.pdfViewer.currentScaleValue = "page-width";
+      triggered = false; // allow re-trigger on next open
+      return true;
+    }
+    return false;
   }
 
-  function scanAll() {
-    document.querySelectorAll("iframe").forEach(fixPdfZoom);
+  function onViewerAppear(node) {
+    if (!node || node.nodeType !== 1) return;
+    var hasPdfViewer =
+      node.classList && node.classList.contains("pdfViewer") ||
+      node.querySelector && node.querySelector(".pdfViewer");
+    if (!hasPdfViewer) return;
+    if (triggered) return;
+    triggered = true;
+    // Small delay to let PDF.js finish initialising the page
+    setTimeout(function () { applyPageWidth(); }, 300);
   }
 
   var observer = new MutationObserver(function (mutations) {
     mutations.forEach(function (m) {
-      if (m.type === "attributes" && m.target.tagName === "IFRAME") {
-        fixPdfZoom(m.target);
-      }
-      m.addedNodes.forEach(function (node) {
-        if (!node || node.nodeType !== 1) return;
-        if (node.tagName === "IFRAME") fixPdfZoom(node);
-        if (node.querySelectorAll) node.querySelectorAll("iframe").forEach(fixPdfZoom);
-      });
+      m.addedNodes.forEach(onViewerAppear);
     });
   });
 
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["src"],
-  });
-
-  window.addEventListener("load", scanAll);
-  scanAll();
+  observer.observe(document.documentElement, { childList: true, subtree: true });
 })();
 
 /* ── Auto-resize multiline TextInput fields in settings panel ── */

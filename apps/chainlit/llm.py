@@ -4,7 +4,7 @@ from typing import Any
 
 import litellm
 
-from settings import CHAT_MODEL, EMBED_MODEL, LITELLM_API_KEY, LITELLM_BASE_URL
+from settings import CHAT_MODEL, CHAT_TEMPERATURE, EMBED_MODEL, LITELLM_API_KEY, LITELLM_BASE_URL
 
 
 def _client_args() -> dict[str, Any]:
@@ -25,6 +25,7 @@ async def chat(
     payload: dict[str, Any] = {
         "model": model or CHAT_MODEL,
         "messages": messages,
+        "temperature": CHAT_TEMPERATURE,
         **_client_args(),
     }
     if tools:

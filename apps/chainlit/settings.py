@@ -25,6 +25,7 @@ LITELLM_BASE_URL = _getenv("LITELLM_BASE_URL")
 LITELLM_API_KEY = _getenv("LITELLM_API_KEY")
 CHAT_MODEL = _getenv("CHAT_MODEL", "gpt-4o-mini")
 FALLBACK_CHAT_MODEL = _getenv("FALLBACK_CHAT_MODEL")
+CHAT_TEMPERATURE = float(_getenv("CHAT_TEMPERATURE", "0.0"))
 EMBED_MODEL = _getenv("EMBED_MODEL", "text-embedding-3-large")
 
 QDRANT_URL = _getenv("QDRANT_URL", "http://localhost:6333")
@@ -85,6 +86,8 @@ CHAT_EXPORT_DIR = Path(
         str((BASE_DIR / ".files" / "chat_exports").resolve()),
     )
 )
+
+UPLOAD_SERVE_DIR = BASE_DIR / ".files" / "uploads"
 
 DATABASE_URL = _getenv("DATABASE_URL")
 CHAINLIT_AUTH_USERNAME = _getenv("CHAINLIT_AUTH_USERNAME", "admin")

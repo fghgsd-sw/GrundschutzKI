@@ -43,10 +43,26 @@ a[href*="/sources/pdf/"]:hover {
   text-decoration: underline;
 }
 
-/* ── PDF sidebar iframe: full panel width ────────────────── */
-iframe[src*="/sources/pdf/"] {
-  width: 100% !important;
-  min-width: 0 !important;
+/* ── PDF.js viewer: full panel width ─────────────────────── */
+.pdfViewer,
+.pdfViewer .page,
+#viewer {
+  width: 150% !important;
+  max-width: 150% !important;
+}
+
+/* ── Citation chips: consistent single-line height ──────── */
+a.element-link {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60ch;
+}
+
+/* ── Follow-up questions on new line below message toolbar ── */
+[data-testid="actions"] {
+  width: 100%;
+  margin-top: 4px;
 }
 
 /* ── Auto-height multiline textareas in settings ─────────── */

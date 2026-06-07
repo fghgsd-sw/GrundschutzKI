@@ -345,5 +345,5 @@ def format_citations(results: list[RagResult]) -> str:
             line = " ".join(parts)
         else:
             line = _extract_citation(meta)
-        lines.append(f"[{idx}] {line}")
+        lines.append(line)
     return "\n".join(lines)

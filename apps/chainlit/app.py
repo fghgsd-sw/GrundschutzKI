@@ -46,10 +46,11 @@ from native_chat import (
     upsert_feedback,
 )
 from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve
-from upload_handler import EphemeralDoc, process_upload, search_ephemeral
+from upload_handler import extract_text
 from settings import (
     CHAT_DB_PATH,
     CHAT_EXPORT_DIR,
+    UPLOAD_SERVE_DIR,
     CHAINLIT_AUTH_PASSWORD,
     CHAINLIT_AUTH_USERNAME,
     CHAINLIT_INIT_DB,
@@ -122,6 +123,21 @@ def _resolve_source_pdf_path(file_name: str, allowed_names: set[str] | None = No
 
 def _source_pdf_url(file_name: str) -> str:
     return f"/sources/pdf/{quote(file_name, safe='')}"
+
+
+def _upload_pdf_url(session_id: str, file_name: str) -> str:
+    return f"/sources/upload/{quote(session_id, safe='')}/{quote(file_name, safe='')}"
+
+
+def _resolve_upload_pdf_path(session_id: str, file_name: str) -> Path | None:
+    if not session_id or not file_name or "/" in file_name or "\\" in file_name:
+        return None
+    candidate = (UPLOAD_SERVE_DIR / session_id / file_name).resolve()
+    try:
+        candidate.relative_to(UPLOAD_SERVE_DIR.resolve())
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
 
 
 def _citation_panel_url(step_id: str) -> str:
@@ -843,7 +859,7 @@ def _source_alias(source_number: int, section_title: str | None, page_start: int
         if truncated.count("[") > truncated.count("]"):
             truncated = truncated.rsplit("[", 1)[0].rstrip(" ,")
         section = f"{truncated}..."
-    return f"Quelle {source_number}: {section} ({_page_label(page_start, page_end)})"
+    return f"Quelle: {section} ({_page_label(page_start, page_end)})"
 
 
 def _markdown_link(label: str, url: str) -> str:
@@ -910,10 +926,6 @@ def _alias_number_map(source_rows: list[tuple[int, str, str, int | None, int | N
     for src_idx, alias, *_ in source_rows:
         if isinstance(src_idx, int):
             alias_by_number[src_idx] = alias
-        match = re.match(r"^\s*Quelle\s+(\d+)\s*:", alias, flags=re.IGNORECASE)
-        if not match:
-            continue
-        alias_by_number[int(match.group(1))] = alias
     return alias_by_number
 
 
@@ -996,35 +1008,8 @@ def _normalize_source_alias_mentions(
         idx = int(match.group(1))
         return alias_by_index.get(idx) or (alias_by_number or {}).get(idx, match.group(0))
 
-    # Normalize free-form mentions like
-    # "Quelle 1: APP.3.2.A20 ... (S) [Zentrale Verwaltung] (S.397)" or
-    # "Quelle 2: Einleitung ... (Seite 12)" to exact alias token.
-    text = re.sub(
-        r"Quelle\s*([0-9]+)\s*:\s*[^\n]*?\((?:S\.?|Seite)\s*[^)\n]+\)",
-        repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-    # Also normalize bracket-wrapped alias mentions so they become clickable tokens.
-    text = re.sub(
-        r"【\s*Quelle\s*([0-9]+)\s*:\s*[^】]+\s*】",
-        repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r"\[\s*Quelle\s*([0-9]+)\s*:\s*[^\]]+\s*\]",
-        repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-    # Normalize plain mentions like "Quelle 2" (without trailing ": ...").
-    text = re.sub(
-        r"\bQuelle\s*([0-9]+)\b(?!\s*:)",
-        repl,
-        text,
-        flags=re.IGNORECASE,
-    )
+    # With numberless aliases the LLM writes the full alias directly;
+    # bracket/number normalization is no longer needed.
     return text
 
 
@@ -1075,7 +1060,7 @@ def _normalize_source_mentions_by_content(
         return best_alias if best_alias and best_score >= 2 else raw
 
     return re.sub(
-        r"Quelle\s*\d+\s*:\s*[^\n]{1,260}?\((?:S\.?|Seite)\s*[^)\n]+\)",
+        r"Quelle\s*:\s*[^\n]{1,260}?\((?:S\.?|Seite)\s*[^)\n]+\)",
         repl,
         text,
         flags=re.IGNORECASE,
@@ -1087,12 +1072,11 @@ def _normalize_source_mentions_by_content(
 # alias as a clickable anchor), and (b) a missing "N: " prefix (filled in from
 # the best-matching source_row alias). See the `_canonicalize_citations` docstring.
 _CITATION_CANONICAL_RE = re.compile(
-    r"(?P<pre>\*{1,2}|_{1,2})?"
-    r"\bQuelle\s+"
-    r"(?:(?P<num>\d+)\s*:\s*)?"
+    r"(?P<pre>\*{1,2}|_{1,2}|\()?"
+    r"\bQuelle\s*:\s*"
     r"(?P<body>[^\n]{1,220}?)"
     r"\((?:S\.?|Seite)\s*(?P<page>\d+)(?:\s*[-\u2013]\s*(?P<page_end>\d+))?\s*\)"
-    r"(?P<post>\*{1,2}|_{1,2})?",
+    r"(?P<post>\*{1,2}|_{1,2}|\))?",
     flags=re.IGNORECASE,
 )
 
@@ -1156,10 +1140,7 @@ def _canonicalize_citations(
     def repl(match: re.Match) -> str:
         raw = match.group(0)
         body = match.group("body") or ""
-        num_group = match.group("num")
         wanted_page = int(match.group("page"))
-        # Score the full match text so pre/post decorators don't perturb token
-        # comparisons; the replacement below still consumes them.
         rnorm = norm(raw)
 
         bsi_match = _BSI_ID_RE.search(body)
@@ -1192,35 +1173,14 @@ def _canonicalize_citations(
         if not best_alias:
             return raw
 
-        if num_group is None:
-            # Numberless form: demand strong signal to avoid rewriting prose.
-            if best_score < 5 or not (best_bsi_hit or best_section_token_hits >= 2):
-                print(
-                    f"[WARN] citation.unresolved (numberless) fragment={raw[:160]!r} "
-                    f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
-                )
-                return raw
-        else:
-            # A bare page-range hit (+3) alone is not enough. When two
-            # retrieved sources share a page and the LLM section title
-            # doesn't match either, the earlier entry wins the strict `>`
-            # tie-break and we'd silently rewrite `Quelle 3: ...` to the
-            # wrong alias. Require a corroborating signal in that case.
-            alias_num_match = re.match(
-                r"^\s*Quelle\s+(\d+)\s*:", best_alias, flags=re.IGNORECASE
+        # Require at least a page-range hit plus one content signal.
+        has_content_signal = best_bsi_hit or best_section_token_hits >= 1
+        if best_score < 2 or (best_score == 3 and not has_content_signal):
+            print(
+                f"[WARN] citation.unresolved fragment={raw[:160]!r} "
+                f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
             )
-            alias_num_matches = bool(
-                alias_num_match and alias_num_match.group(1) == num_group
-            )
-            has_content_signal = (
-                best_bsi_hit or best_section_token_hits >= 1 or alias_num_matches
-            )
-            if best_score < 2 or (best_score == 3 and not has_content_signal):
-                print(
-                    f"[WARN] citation.unresolved fragment={raw[:160]!r} "
-                    f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
-                )
-                return raw
+            return raw
 
         return best_alias
 
@@ -1253,7 +1213,7 @@ def _inject_naked_source_links(text: str) -> str:
         return label
 
     return re.sub(
-        r"(?P<label>Quelle\s*\d+\s*:[^\n]{1,260}?\((?:S\.?|Seite)\s*[^)\n]+\))\((?:https?://[^\s)]+|/sources/pdf/[^)\s]+)\)",
+        r"(?P<label>Quelle\s*:[^\n]{1,260}?\((?:S\.?|Seite)\s*[^)\n]+\))\((?:https?://[^\s)]+|/sources/pdf/[^)\s]+)\)",
         repl,
         text,
         flags=re.IGNORECASE,
@@ -1361,15 +1321,7 @@ def _align_aliases_to_source_ids(
         updated_content = updated_content.replace(old_alias, new_alias)
         updated_content = updated_content.replace(escaped_old, escaped_new)
 
-        old_num_match = re.match(r"^\s*Quelle\s*(\d+)\s*:", old_alias, flags=re.IGNORECASE)
-        new_num_match = re.match(r"^\s*Quelle\s*(\d+)\s*:", new_alias, flags=re.IGNORECASE)
-        if old_num_match and new_num_match and old_num_match.group(1) != new_num_match.group(1):
-            updated_content = re.sub(
-                rf"\bQuelle\s*{re.escape(old_num_match.group(1))}\b",
-                f"Quelle {new_num_match.group(1)}",
-                updated_content,
-                flags=re.IGNORECASE,
-            )
+        # No number-based remapping needed with numberless aliases.
 
     return updated_content, remapped_rows, remapped_session_rows
 
@@ -1391,8 +1343,6 @@ def _desired_source_count(text: str, available: int) -> int:
         r"\[(\d+)\]",
         r"【(\d+)[^】]*】",
         r"\[(\d+)†[^\]]*\]",
-        r"Quelle\s*(\d+)\s*:",
-        r"\bQuelle\s*(\d+)\b",
     ):
         refs.extend(int(x) for x in re.findall(pattern, text or ""))
     if refs:
@@ -1821,7 +1771,7 @@ def _build_citation_history_view(history: list[dict[str, Any]]) -> tuple[str | N
                 if section_for_alias is None:
                     raw_alias = row.get("alias")
                     if isinstance(raw_alias, str) and raw_alias.strip():
-                        section_for_alias = re.sub(r"^\s*Quelle\s*\d+\s*:\s*", "", raw_alias, flags=re.IGNORECASE).strip()
+                        section_for_alias = re.sub(r"^\s*Quelle\s*:\s*", "", raw_alias, flags=re.IGNORECASE).strip()
                         section_for_alias = re.sub(
                             r"\s*\((?:S\.?|Seite)\s*[^)]+\)\s*$",
                             "",
@@ -2152,6 +2102,19 @@ async def on_app_startup() -> None:
             headers={"Content-Disposition": "inline"},
         )
 
+    @chainlit_fastapi_app.get("/sources/upload/{session_id}/{file_name:path}")
+    async def source_upload_pdf(session_id: str, file_name: str, current_user=Depends(get_current_user)):
+        if current_user is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        file_path = _resolve_upload_pdf_path(session_id, file_name)
+        if file_path is None:
+            raise HTTPException(status_code=404, detail="Uploaded PDF not found")
+        return FileResponse(
+            path=str(file_path),
+            media_type="application/pdf",
+            headers={"Content-Disposition": "inline"},
+        )
+
     @chainlit_fastapi_app.get("/sources/citations/{step_id}")
     async def source_citations(step_id: str, current_user=Depends(get_current_user)):
         if current_user is None:
@@ -2223,6 +2186,7 @@ async def on_app_startup() -> None:
             filename=csv_file.name,
         )
 
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/sources/upload/{session_id}/{file_name:path}")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/sources/pdf/{file_name:path}")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/sources/citations/{step_id}")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/all-chats")
@@ -2233,6 +2197,22 @@ async def on_app_startup() -> None:
     print("[STARTUP] native export route registered at /export/all-chats")
     print("[STARTUP] feedback export route registered at /export/feedback")
     print("[STARTUP] registration route registered at /auth/register")
+
+
+@cl.on_chat_end
+async def on_chat_end():
+    """Delete uploaded files when the session ends."""
+    upload_pdfs: dict[str, str] = cl.user_session.get("upload_pdfs") or {}
+    for file_name, sid in upload_pdfs.items():
+        path = _resolve_upload_pdf_path(sid, file_name)
+        if path and path.exists():
+            try:
+                path.unlink()
+                parent = path.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except Exception as exc:
+                print(f"[WARN] upload cleanup failed for {file_name}: {exc}")
 
 
 @cl.on_feedback
@@ -2918,29 +2898,46 @@ async def main(message: cl.Message):
     if await _handle_control_message(message):
         return
 
-    # Process any uploaded files into ephemeral session context
+    # Process any uploaded files as session context (full text, not RAG)
     if message.elements:
-        ephemeral_docs: list[EphemeralDoc] = cl.user_session.get("ephemeral_docs") or []
+        import shutil
+        upload_context_parts: list[str] = cl.user_session.get("upload_context_parts") or []
+        upload_pdfs: dict[str, str] = cl.user_session.get("upload_pdfs") or {}
+        session_id_for_upload = cl.context.session.thread_id
         new_files: list[str] = []
         for el in message.elements:
             if not getattr(el, "path", None):
                 continue
+            file_name = getattr(el, "name", Path(el.path).name)
             try:
-                docs = await process_upload(
+                text = extract_text(
                     file_path=el.path,
-                    file_name=getattr(el, "name", Path(el.path).name),
                     mime=getattr(el, "mime", None),
                 )
-                ephemeral_docs.extend(docs)
-                new_files.append(getattr(el, "name", Path(el.path).name))
+                if text.strip():
+                    upload_context_parts.append(
+                        f"### Dokument: {file_name}\n{text.strip()}"
+                    )
+                    new_files.append(file_name)
+                else:
+                    await cl.Message(
+                        content=f"**{file_name}** konnte nicht gelesen werden — das PDF enthält keinen eingebetteten Text (kein OCR). Bitte ein Dokument mit Textebene hochladen."
+                    ).send()
+                    continue
+                if Path(el.path).suffix.lower() == ".pdf" or (getattr(el, "mime", "") or "").endswith("pdf"):
+                    dest_dir = UPLOAD_SERVE_DIR / session_id_for_upload
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(el.path, dest_dir / file_name)
+                    upload_pdfs[file_name] = session_id_for_upload
             except Exception as exc:
                 await cl.Message(
                     content=f"Datei konnte nicht verarbeitet werden: {exc}"
                 ).send()
         if new_files:
-            cl.user_session.set("ephemeral_docs", ephemeral_docs)
+            cl.user_session.set("upload_context_parts", upload_context_parts)
+            cl.user_session.set("upload_pdfs", upload_pdfs)
             await cl.Message(
-                content=f"**{', '.join(new_files)}** wurde als Sitzungskontext hinzugefügt ({len(ephemeral_docs)} Abschnitte)."
+                content=f"**{', '.join(new_files)}** als Kontext für diese Sitzung hinzugefügt."
             ).send()
 
     messages = cl.user_session.get("messages") or []
@@ -2956,7 +2953,32 @@ async def main(message: cl.Message):
     add_chat_message(CHAT_DB_PATH, session_id, "user", message.content)
     set_session_title_if_missing(CHAT_DB_PATH, session_id, _first_sentence(message.content, max_len=96))
 
-    response = await chat(messages, tools=TOOLS, tool_choice="required")
+    # Build upload context injection — prepended to every API call but NOT stored in history
+    _UPLOAD_CONTEXT_MAX_CHARS = 30000
+    upload_context_parts: list[str] = cl.user_session.get("upload_context_parts") or []
+    if upload_context_parts:
+        context_block = "\n\n".join(upload_context_parts)
+        if len(context_block) > _UPLOAD_CONTEXT_MAX_CHARS:
+            context_block = context_block[:_UPLOAD_CONTEXT_MAX_CHARS] + "\n\n[... Dokument gekürzt ...]"
+        _upload_sys: dict = {
+            "role": "system",
+            "content": (
+                "## Hochgeladener Unternehmenskontext (gilt für die gesamte Sitzung):\n"
+                + context_block
+                + "\n\n## Hinweis zur Nutzung:\n"
+                "Informationen aus dem obigen Unternehmenskontext dürfen ohne 'Quelle N:' Zitierung "
+                "verwendet werden. Referenziere sie mit 'laut hochgeladenem Dokument' oder "
+                "'gemäß Unternehmenskontext'. Das Zitatformat 'Quelle N:' gilt ausschließlich "
+                "für Fundstellen aus der IT-Grundschutz-Wissensdatenbank."
+            ),
+        }
+        def _api_msgs() -> list:
+            return [_upload_sys] + messages
+    else:
+        def _api_msgs() -> list:
+            return messages
+
+    response = await chat(_api_msgs(), tools=TOOLS, tool_choice="required")
     assistant_msg = response.choices[0].message
     print(
         "[DEBUG] first_call",
@@ -2969,7 +2991,7 @@ async def main(message: cl.Message):
     if not getattr(assistant_msg, "tool_calls", None):
         print("[WARN] first_call_without_tool_retrying")
         retry_messages = [
-            *messages,
+            *_api_msgs(),
             {
                 "role": "system",
                 "content": "Rufe zuerst das Tool rag_retrieve auf, bevor du antwortest.",
@@ -3043,27 +3065,8 @@ async def main(message: cl.Message):
                 else:
                     with cl.Step(name="rag_retrieve", type="tool") as step:
                         step.input = {"query": query, "top_k": top_k}
-
-                        # Standard retrieval (no personalization filtering on chunks)
-                        results = await retrieve(
-                            query=query,
-                            top_k=top_k,
-                        )
-
-                        # Merge ephemeral session docs if present
-                        ephemeral_docs = cl.user_session.get("ephemeral_docs") or []
-                        if ephemeral_docs:
-                            from llm import embed as _embed
-                            q_emb = (await _embed([query]))[0]
-                            ephemeral_hits = search_ephemeral(q_emb, ephemeral_docs, top_k=3)
-                            results = ephemeral_hits + results
-                        print(
-                            "[DEBUG] rag_retrieve",
-                            "hits=",
-                            len(results),
-                            "first_text_len=",
-                            len(results[0].text) if results else 0,
-                        )
+                        results = await retrieve(query=query, top_k=top_k)
+                        print("[DEBUG] rag_retrieve", "hits=", len(results))
                         step.output = {"hits": len(results)}
 
                     context = build_context(results)
@@ -3099,7 +3102,7 @@ async def main(message: cl.Message):
                     metadata={"tool_name": "rag_retrieve"},
                 )
 
-            followup = await chat(messages, tools=TOOLS, tool_choice="auto")
+            followup = await chat(_api_msgs(), tools=TOOLS, tool_choice="auto")
             current_msg = followup.choices[0].message
             print(
                 "[DEBUG] tool_round_followup",
@@ -3243,9 +3246,7 @@ async def main(message: cl.Message):
             if isinstance(alias_url, str) and alias_url:
                 if isinstance(src_idx, int):
                     url_by_number[src_idx] = alias_url
-                number_match = re.match(r"^\s*Quelle\s+(\d+)\s*:", alias, flags=re.IGNORECASE)
-                if number_match:
-                    url_by_number[int(number_match.group(1))] = alias_url
+                pass  # no number-based URL lookup with numberless aliases
 
         alias_by_ref = {**alias_by_number, **alias_by_index}
         url_by_ref = {**url_by_number, **url_by_index}

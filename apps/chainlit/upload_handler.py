@@ -1,8 +1,10 @@
 """Ephemeral in-session context from user-uploaded documents.
 
-Text is extracted with pypdfium2 (no OCR, no ML models), chunked, embedded,
-and stored in cl.user_session for the duration of the chat. Nothing is written
-to Qdrant — vectors live only in memory and are discarded when the session ends.
+Text is extracted with pypdfium2 (no OCR, no ML models), chunked page-aware,
+embedded, and stored in cl.user_session for the duration of the chat. Nothing
+is written to Qdrant — vectors live only in memory and are discarded when the
+session ends. PDFs are also saved to UPLOAD_SERVE_DIR so they can be opened in
+the sidebar viewer via /sources/upload/<session_id>/<filename>.
 """
 
 from __future__ import annotations
@@ -29,43 +31,55 @@ class EphemeralDoc:
 
 
 # ---------------------------------------------------------------------------
-# Text extraction
+# Text extraction — returns list of (page_text, page_number) tuples
 # ---------------------------------------------------------------------------
 
-def _extract_pdf(path: Path) -> str:
+def _extract_pdf_pages(path: Path) -> list[tuple[str, int]]:
     import pypdfium2 as pdfium
     pdf = pdfium.PdfDocument(str(path))
-    pages = [page.get_textpage().get_text_range() for page in pdf]
+    pages = []
+    for page_idx, page in enumerate(pdf, start=1):
+        text = page.get_textpage().get_text_range().strip()
+        if text:
+            pages.append((text, page_idx))
     pdf.close()
-    return "\n\n".join(pages)
+    return pages
 
 
-def _extract_text(path: Path, mime: str | None = None) -> str:
+def extract_text(file_path: str, mime: str | None = None) -> str:
+    """Extract full text from a file as a single string."""
+    pages = _extract_text_pages(Path(file_path), mime)
+    return "\n\n".join(text for text, _ in pages)
+
+
+def _extract_text_pages(path: Path, mime: str | None = None) -> list[tuple[str, int]]:
     suffix = path.suffix.lower()
     if suffix == ".pdf" or (mime and "pdf" in mime):
-        return _extract_pdf(path)
-    return path.read_text(encoding="utf-8", errors="replace")
+        return _extract_pdf_pages(path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return [(text, 1)]
 
 
 # ---------------------------------------------------------------------------
-# Chunking
+# Chunking — respects page boundaries, tracks page in each chunk
 # ---------------------------------------------------------------------------
 
-def _chunk(text: str) -> list[str]:
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    chunks: list[str] = []
-    current = ""
-    for para in paragraphs:
-        if len(current) + len(para) + 2 > CHUNK_MAX_CHARS:
-            if current:
-                chunks.append(current)
-            # Overlap: carry last CHUNK_OVERLAP chars into next chunk
-            current = current[-CHUNK_OVERLAP:] + "\n\n" + para if current else para
-        else:
-            current = current + "\n\n" + para if current else para
-    if current:
-        chunks.append(current)
-    return chunks
+def _chunk_pages(pages: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """Chunk page-annotated text. Returns (chunk_text, page_number) tuples."""
+    results: list[tuple[str, int]] = []
+    for page_text, page_num in pages:
+        paragraphs = [p.strip() for p in page_text.split("\n\n") if p.strip()]
+        current = ""
+        for para in paragraphs:
+            if len(current) + len(para) + 2 > CHUNK_MAX_CHARS:
+                if current:
+                    results.append((current, page_num))
+                current = current[-CHUNK_OVERLAP:] + "\n\n" + para if current else para
+            else:
+                current = current + "\n\n" + para if current else para
+        if current:
+            results.append((current, page_num))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -81,26 +95,28 @@ async def process_upload(
     if not path.exists():
         raise FileNotFoundError(file_path)
 
-    raw_text = _extract_text(path, mime)
-    if not raw_text.strip():
+    pages = _extract_text_pages(path, mime)
+    if not pages:
         return []
 
-    chunks = _chunk(raw_text)
+    chunks = _chunk_pages(pages)
     if not chunks:
         return []
 
     docs: list[EphemeralDoc] = []
     for start in range(0, len(chunks), EMBED_BATCH_SIZE):
-        batch = chunks[start : start + EMBED_BATCH_SIZE]
-        embeddings = await embed(batch)
-        for idx, (chunk, emb) in enumerate(zip(batch, embeddings)):
+        batch_chunks = chunks[start : start + EMBED_BATCH_SIZE]
+        texts = [c for c, _ in batch_chunks]
+        embeddings = await embed(texts)
+        for idx, ((chunk_text, page_num), emb) in enumerate(zip(batch_chunks, embeddings)):
             docs.append(
                 EphemeralDoc(
-                    text=chunk,
+                    text=chunk_text,
                     embedding=emb,
                     metadata={
                         "source": "upload",
                         "file": file_name,
+                        "page": page_num,
                         "chunk_index": start + idx,
                     },
                 )
