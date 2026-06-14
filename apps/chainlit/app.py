@@ -64,6 +64,7 @@ from settings import (
     STARTER_QUESTIONS,
     SYSTEM_PROMPT_PATH,
     TOP_K,
+    CITATION_VALIDATION,
 )
 from user_profile import (
     _kw_key,
@@ -860,6 +861,65 @@ def _source_alias(source_number: int, section_title: str | None, page_start: int
             truncated = truncated.rsplit("[", 1)[0].rstrip(" ,")
         section = f"{truncated}..."
     return f"Quelle: {section} ({_page_label(page_start, page_end)})"
+
+
+_BSI_ID_PATTERN = re.compile(r"\b([A-Z]{2,4}\.\d+(?:\.\w+)*)\b")
+
+
+def _validate_citations(
+    content: str,
+    source_rows: list[tuple],
+) -> str:
+    """
+    Programmatic citation check (Phase 1, no LLM call).
+    Removes citations where a BSI-ID in the surrounding text
+    doesn't match the baustein_id of the cited chunk.
+    Only acts on Kompendium chunks (anforderung/baustein doc_types).
+    Returns cleaned content.
+    """
+    if not content or not source_rows:
+        return content
+
+    # Build alias → baustein_id map from source_rows (list of dicts)
+    alias_baustein: dict[str, str | None] = {}
+    for row in source_rows:
+        alias = row.get("alias") if isinstance(row, dict) else (row[1] if len(row) > 1 else None)
+        evidence = row.get("evidence") if isinstance(row, dict) else (row[6] if len(row) > 6 else None)
+        if not alias:
+            continue
+        try:
+            meta = json.loads(evidence) if isinstance(evidence, str) and evidence.strip().startswith("{") else {}
+        except Exception:
+            meta = {}
+        alias_baustein[alias] = meta.get("baustein_id") or meta.get("anforderung_id")
+
+    def check_span(match: re.Match) -> str:
+        raw = match.group(0)
+        alias = raw  # after canonicalization alias == span text
+        baustein_id = alias_baustein.get(alias)
+        if not baustein_id:
+            return raw  # not a Kompendium chunk → keep
+
+        # Look 300 chars before the citation for a BSI-ID
+        start = max(0, match.start() - 300)
+        context = content[start:match.start()]
+        ids_in_context = {m.group(1) for m in _BSI_ID_PATTERN.finditer(context)}
+
+        if not ids_in_context:
+            return raw  # no BSI-ID in context → can't judge, keep
+
+        # Check if any context ID is covered by the cited baustein
+        valid = any(bid.startswith(baustein_id.split(".A")[0]) for bid in ids_in_context)
+        if valid:
+            return raw
+
+        print(
+            f"[CITATION_VALIDATION] removed mismatch: alias={alias[:60]!r} "
+            f"baustein={baustein_id} context_ids={ids_in_context}"
+        )
+        return ""
+
+    return _CITATION_CANONICAL_RE.sub(check_span, content)
 
 
 def _markdown_link(label: str, url: str) -> str:
@@ -3067,6 +3127,21 @@ async def main(message: cl.Message):
                         step.input = {"query": query, "top_k": top_k}
                         results = await retrieve(query=query, top_k=top_k)
                         print("[DEBUG] rag_retrieve", "hits=", len(results))
+                        for _i, _r in enumerate(results, 1):
+                            _m = _r.metadata
+                            _label = (
+                                _m.get("anforderung_id")
+                                or _m.get("section_title")
+                                or _m.get("title")
+                                or "?"
+                            )
+                            print(
+                                f"  [{_i}] score={_r.score:.3f}"
+                                f" doc_type={_m.get('doc_type','?')}"
+                                f" std={_m.get('standard_id','')}"
+                                f" p={_m.get('page_start','?')}"
+                                f" {_label[:60]}"
+                            )
                         step.output = {"hits": len(results)}
 
                     context = build_context(results)
@@ -3431,6 +3506,12 @@ async def main(message: cl.Message):
         inline_pdf_elements = _build_inline_pdf_elements(source_rows_for_session)
         if inline_pdf_elements:
             assistant_reply.elements = (assistant_reply.elements or []) + inline_pdf_elements
+
+        if CITATION_VALIDATION and assistant_reply.content and source_rows_for_session:
+            assistant_reply.content = _validate_citations(
+                assistant_reply.content,
+                source_rows_for_session,
+            )
 
         await assistant_reply.send()
         if citation_panel_content:

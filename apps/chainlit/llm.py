@@ -32,7 +32,7 @@ async def chat(
         payload["tools"] = tools
         if tool_choice:
             payload["tool_choice"] = tool_choice
-    return await litellm.acompletion(**payload)
+    return await litellm.acompletion(**payload, num_retries=3, timeout=60)
 
 
 async def stream_chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, tool_choice: str | None = None):

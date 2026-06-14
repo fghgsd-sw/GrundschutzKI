@@ -37,6 +37,7 @@ MAX_SOURCE_LINKS = int(_getenv("MAX_SOURCE_LINKS", "8"))
 SCORE_THRESHOLD = float(_getenv("SCORE_THRESHOLD", "0.0"))
 STREAMING_ENABLED = (_getenv("STREAMING_ENABLED", "false") or "false").lower() == "true"
 STREAMING_DOUBLE_PASS = (_getenv("STREAMING_DOUBLE_PASS", "false") or "false").lower() == "true"
+CITATION_VALIDATION = (_getenv("CITATION_VALIDATION", "false") or "false").lower() == "true"
 
 SYSTEM_PROMPT_PATH = Path(
     _getenv(

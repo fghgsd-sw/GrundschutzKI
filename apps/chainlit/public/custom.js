@@ -48,6 +48,44 @@
   ensureHint();
 })();
 
+/* ── Force line break before follow-up question buttons ─────── */
+(function () {
+  var BREAK_ATTR = "data-gski-break";
+
+  function injectBreak(container) {
+    var buttons = container.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) {
+      var text = (buttons[i].textContent || "").trim();
+      if (text.endsWith("?")) {
+        if (!buttons[i].previousSibling || !buttons[i].previousSibling[BREAK_ATTR]) {
+          var spacer = document.createElement("div");
+          spacer[BREAK_ATTR] = "1";
+          spacer.style.cssText = "flex-basis:100%;height:0;";
+          container.insertBefore(spacer, buttons[i]);
+        }
+        break;
+      }
+    }
+  }
+
+  function scanAll() {
+    document.querySelectorAll('[data-testid="actions"]').forEach(injectBreak);
+  }
+
+  var observer = new MutationObserver(function (mutations) {
+    mutations.forEach(function (m) {
+      m.addedNodes.forEach(function (node) {
+        if (!node || node.nodeType !== 1) return;
+        if (node.matches && node.matches('[data-testid="actions"]')) injectBreak(node);
+        if (node.querySelectorAll) node.querySelectorAll('[data-testid="actions"]').forEach(injectBreak);
+      });
+    });
+  });
+
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener("load", scanAll);
+})();
+
 /* ── PDF.js viewer: trigger page-width scale on load ─────── */
 (function () {
   var triggered = false;

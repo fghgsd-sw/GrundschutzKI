@@ -177,6 +177,7 @@ def _standards_docs_from_docling_json(json_dir: Path) -> Iterable[Doc]:
                 "text": text,
                 "title": section["title"],
                 "doc_type": "standard_abschnitt",
+                "standard_id": json_path.stem,
                 "source": {"document": json_path.stem, "file": pdf_name},
                 "file": pdf_name,
                 "document_id": f"{json_path.stem}:s{idx}",
@@ -203,13 +204,16 @@ def _standards_docs_from_preprocessed(root: Path) -> Iterable[Doc]:
         doc_id = f"standards:{data.get('id') or path.stem}"
         source = data.get("source") or {}
         source_file = source.get("file") if isinstance(source, dict) else None
+        source_doc = source.get("document") if isinstance(source, dict) else None
         pages = data.get("pages") or {}
         page_start = pages.get("start") if isinstance(pages, dict) else None
         page_end = pages.get("end") if isinstance(pages, dict) else None
         payload = {
             "text": text,
             "title": header,
+            "section_title": header,
             "doc_type": "standard_abschnitt",
+            "standard_id": source_doc,
             "source": data.get("source") or str(path),
             "file": source_file,
             "page": data.get("pages"),
