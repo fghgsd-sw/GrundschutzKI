@@ -20,12 +20,13 @@ Usage as library (e.g. from a notebook):
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 import re
 import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
@@ -42,7 +43,7 @@ try:
     from dotenv import load_dotenv
     env_path = NOTEBOOKS_DIR / ".env"
     if env_path.exists():
-        load_dotenv(env_path)
+        load_dotenv(env_path, override=True)
 except ImportError:
     pass
 
@@ -60,10 +61,35 @@ from litellm_client import (
 )
 
 
+JUDGE_MODEL_DEFAULT = "openai/meta-llama/Llama-3.3-70B-Instruct"
+
+JUDGE_SYSTEM_PROMPT = """\
+Du bist Evaluator für ein RAG-Chatbot-System über das IT-Grundschutz-Kompendium des BSI.
+
+Bewerte eine generierte Anschlussfrage anhand zweier Kriterien:
+
+1. **Beantwortbarkeit** (answerability): Ist die Anschlussfrage durch die \
+IT-Grundschutz-Dokumente beantwortbar?
+   - 2 = Vollständig durch IT-Grundschutz abgedeckt
+   - 1 = Teilweise abgedeckt oder nur indirekt
+   - 0 = Nicht durch IT-Grundschutz abgedeckt
+
+2. **Relevanz** (relevance): Ist die Anschlussfrage thematisch passend zur Ausgangsfrage?
+   - 2 = Direkt relevant und sinnvolle Vertiefung
+   - 1 = Tangential relevant
+   - 0 = Nicht relevant oder thematisch weit entfernt
+
+Antworte ausschließlich als JSON-Objekt, ohne weitere Erklärung:
+{"answerability": <0|1|2>, "relevance": <0|1|2>, "reason": "<Begründung, max. 30 Wörter>"}\
+"""
+
+FOLLOWUP_ITEM_EXTRACT_RE = re.compile(r"^\s*\d+\.\s+(.+\?)\s*$", re.MULTILINE)
+
+
 @dataclass
 class EvaluationConfig:
     """Configuration for the evaluation run."""
-    
+
     # Required parameters
     llm: str
     embedding_model: str
@@ -73,10 +99,14 @@ class EvaluationConfig:
     top_k: int
     output_name: str
     temperature: float
-    
+
     # Optional parameters with defaults
     seed: int = 42
     eval_csv_path: str = "data/data_evaluation/GSKI_Fragen-Antworten-Fundstellen.csv"
+    judge_model: str = JUDGE_MODEL_DEFAULT
+    evaluate_followups: bool = True
+    limit: Optional[int] = None
+    resume: bool = False
 
 
 def _set_seed(seed: int) -> None:
@@ -134,6 +164,97 @@ def _count_followups(followups_block: str) -> int:
     if not followups_block:
         return 0
     return len(FOLLOWUP_ITEM_RE.findall(followups_block))
+
+
+def _extract_followup_list(followups_block: str) -> List[str]:
+    """Extract individual follow-up question strings from the followups block."""
+    if not followups_block:
+        return []
+    return [m.strip() for m in FOLLOWUP_ITEM_EXTRACT_RE.findall(followups_block) if m.strip()]
+
+
+def _judge_followup(
+    original_question: str,
+    followup_question: str,
+    contexts: List[str],
+    llm_cfg: LLMConfig,
+    judge_model: str,
+) -> dict:
+    """Run LLM-as-judge for a single follow-up question.
+
+    Returns a dict with keys: answerability (0-2), relevance (0-2), reason (str).
+    On failure returns answerability=-1, relevance=-1.
+    """
+    contexts_text = "\n\n".join(f"[{i+1}] {c[:600]}" for i, c in enumerate(contexts))
+    user_content = (
+        f"Ausgangsfrage: {original_question}\n\n"
+        f"Anschlussfrage: {followup_question}\n\n"
+        f"Relevante IT-Grundschutz-Abschnitte (Top-3 Retrieval):\n{contexts_text}"
+    )
+
+    judge_cfg = LLMConfig(
+        api_base=llm_cfg.api_base,
+        api_key=llm_cfg.api_key,
+        model=judge_model,
+        embedding_model=llm_cfg.embedding_model,
+    )
+    messages = [
+        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+    try:
+        response = chat_completion(messages, judge_cfg, temperature=0.0)
+        content = (
+            response["choices"][0]["message"]["content"]
+            if isinstance(response, dict)
+            else response.choices[0].message.content
+        )
+        json_match = re.search(r"\{[^}]+\}", content, re.DOTALL)
+        if json_match:
+            parsed = json.loads(json_match.group())
+            return {
+                "answerability": max(0, min(2, int(parsed.get("answerability", 0)))),
+                "relevance": max(0, min(2, int(parsed.get("relevance", 0)))),
+                "reason": str(parsed.get("reason", ""))[:200],
+            }
+    except Exception as exc:
+        print(f"  [WARN] Judge failed for '{followup_question[:60]}': {exc}")
+
+    return {"answerability": -1, "relevance": -1, "reason": "evaluation_failed"}
+
+
+def _run_followup_evaluation(
+    records: List[dict],
+    llm_cfg: LLMConfig,
+    judge_model: str,
+    qdrant_client: Any,
+    collection_name: str,
+) -> List[List[dict]]:
+    """Run LLM-as-judge for every follow-up question in every record.
+
+    Returns a list (one entry per record) of lists (one entry per follow-up).
+    Each entry: {followup, answerability, relevance, reason}.
+    """
+    all_results: List[List[dict]] = []
+    print(f"  Judge model: {judge_model}")
+
+    for i, record in enumerate(records):
+        followups = _extract_followup_list(record["answer_followups"])[:3]
+        record_scores: List[dict] = []
+
+        for fq in followups:
+            contexts = _retrieve_contexts(fq, 3, qdrant_client, collection_name, llm_cfg)
+            score = _judge_followup(record["question"], fq, contexts, llm_cfg, judge_model)
+            score["followup"] = fq
+            record_scores.append(score)
+
+        all_results.append(record_scores)
+
+        if (i + 1) % 10 == 0:
+            print(f"  Judged follow-ups for {i+1}/{len(records)} questions...")
+
+    return all_results
 
 
 def _build_messages(
@@ -202,15 +323,16 @@ async def _score_row_async(
                 "answer_correctness": answer_correctness.value,
             }
         except Exception as e:
-            raise RuntimeError(
-                f"RAGAS evaluation failed for question: '{row['question'][:100]}...'\n"
-                f"Error: {type(e).__name__}: {e}\n\n"
-                f"Please check:\n"
-                f"  1. LLM API is accessible and responding\n"
-                f"  2. The model supports the required API format\n"
-                f"  3. Context and answer are not empty\n"
-                f"  4. Network connectivity is stable"
-            ) from e
+            print(
+                f"  [WARN] RAGAS failed for '{row['question'][:80]}': "
+                f"{type(e).__name__}: {str(e)[:200]}"
+            )
+            return {
+                "context_precision": float("nan"),
+                "context_recall": float("nan"),
+                "faithfulness": float("nan"),
+                "answer_correctness": float("nan"),
+            }
 
 
 async def _run_ragas_evaluation(
@@ -272,17 +394,33 @@ async def _run_ragas_evaluation(
         for record in records
     ]
     
-    scores = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    scores = []
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            print(f"  [WARN] Task {i} raised: {type(r).__name__}: {str(r)[:200]}")
+            scores.append({
+                "context_precision": float("nan"),
+                "context_recall": float("nan"),
+                "faithfulness": float("nan"),
+                "answer_correctness": float("nan"),
+            })
+        else:
+            scores.append(r)
     return scores
 
 
 def _compute_statistics(values: List[float]) -> dict:
-    """Compute statistics for a list of values."""
+    """Compute statistics for a list of values, ignoring NaN."""
+    import math
+    clean = [v for v in values if isinstance(v, (int, float)) and not math.isnan(v)]
+    if not clean:
+        return {"avg": float("nan"), "min": float("nan"), "max": float("nan"), "std": 0.0}
     return {
-        "avg": statistics.mean(values),
-        "min": min(values),
-        "max": max(values),
-        "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+        "avg": statistics.mean(clean),
+        "min": min(clean),
+        "max": max(clean),
+        "std": statistics.stdev(clean) if len(clean) > 1 else 0.0,
     }
 
 
@@ -392,6 +530,10 @@ def generate_evaluation_results(
     temperature: float,
     seed: int = 42,
     eval_csv_path: str = "data/data_evaluation/GSKI_Fragen-Antworten-Fundstellen.csv",
+    judge_model: str = JUDGE_MODEL_DEFAULT,
+    evaluate_followups: bool = True,
+    limit: Optional[int] = None,
+    resume: bool = False,
 ) -> Path:
     """
     Generate evaluation CSV and README files.
@@ -436,6 +578,10 @@ def generate_evaluation_results(
         temperature=temperature,
         seed=seed,
         eval_csv_path=eval_csv_path,
+        judge_model=judge_model,
+        evaluate_followups=evaluate_followups,
+        limit=limit,
+        resume=resume,
     )
     
     # Set seed for reproducibility
@@ -484,64 +630,101 @@ def generate_evaluation_results(
 
     # Build records for all questions (skip first row to keep historical row-count parity)
     print("Retrieving contexts and generating answers...")
-    records = []
-
-    for idx, row in df.iloc[1:].iterrows():
-        question = row["Frage"]
-        ground_truth_answer = row[truth_col]
-        ground_truth_context = row["Fundstellen im IT-Grundschutz-Kompendium 2023"]
-
-        contexts = _retrieve_contexts(
-            question, config.top_k, qdrant_client, collection_name, llm_cfg
-        )
-
-        messages = _build_messages(question, contexts, system_prompt)
-        answer = _generate_answer(messages, llm_cfg, config.temperature, config.seed)
-
-        answer_main, answer_followups = _strip_followups(answer)
-        gt_main, gt_followups = _strip_followups(ground_truth_answer)
-
-        records.append({
-            "question": question,
-            "answer": answer,
-            "answer_main": answer_main,
-            "answer_followups": answer_followups,
-            "followup_count_generated": _count_followups(answer_followups),
-            "contexts": contexts,
-            "ground_truth_answer": ground_truth_answer,
-            "ground_truth_answer_main": gt_main,
-            "ground_truth_followups": gt_followups,
-            "followup_count_truth": _count_followups(gt_followups),
-            "ground_truth_context": ground_truth_context,
-        })
-
-        if (idx) % 10 == 0:
-            print(f"  Processed {idx}/{len(df)-1} questions...")
-    
-    print(f"  Generated {len(records)} answers")
-    print()
-    
-    # Save intermediate answers file (in case RAGAS fails)
     output_dir = PROJECT_ROOT / "data" / "results"
     output_dir.mkdir(parents=True, exist_ok=True)
-    
     intermediate_path = output_dir / f"{config.output_name}_answers.csv"
-    intermediate_records = []
-    for record in records:
-        intermediate_records.append({
-            "Frage": record["question"],
-            "Antwort": record["ground_truth_answer"],
-            "Antwort (Hauptteil)": record["ground_truth_answer_main"],
-            "Fundstellen": record["ground_truth_context"],
-            "Generierte Antwort": record["answer"],
-            "Generierte Antwort (Hauptteil)": record["answer_main"],
-            "Generierte Anschlussfragen": record["answer_followups"],
-            "followup_count_generated": record["followup_count_generated"],
-            "followup_count_truth": record["followup_count_truth"],
-            "Ermittelte Fundstellen": "\n".join(record["contexts"]),
-        })
-    intermediate_df = pd.DataFrame(intermediate_records)
-    intermediate_df.to_csv(intermediate_path, sep=";", index=False, encoding="utf-8-sig")
+
+    _ANSWERS_FIELDNAMES = [
+        "Frage", "Antwort", "Antwort (Hauptteil)", "Fundstellen",
+        "Generierte Antwort", "Generierte Antwort (Hauptteil)",
+        "Generierte Anschlussfragen", "followup_count_generated",
+        "followup_count_truth", "Ermittelte Fundstellen",
+    ]
+
+    # Resume support: skip questions already in _answers.csv when --resume is set
+    done_questions: set[str] = set()
+    if config.resume and intermediate_path.exists():
+        existing_df = pd.read_csv(intermediate_path, sep=";", encoding="utf-8-sig")
+        done_questions = set(existing_df["Frage"].dropna().tolist())
+        print(f"  Resuming: {len(done_questions)} questions already done, skipping.")
+
+    ans_file_mode = "a" if done_questions else "w"
+    ans_file = intermediate_path.open(ans_file_mode, encoding="utf-8-sig", newline="")
+    import csv as _csv
+    ans_writer = _csv.DictWriter(ans_file, fieldnames=_ANSWERS_FIELDNAMES, delimiter=";")
+    if ans_file_mode == "w":
+        ans_writer.writeheader()
+
+    records = []
+    checkpoint_size = 10
+    checkpoint_buf: list[dict] = []
+
+    rows = df.iloc[1:]
+    if config.limit:
+        rows = rows.head(config.limit)
+
+    try:
+        for i, (idx, row) in enumerate(rows.iterrows(), start=1):
+            question = row["Frage"]
+            if question in done_questions:
+                continue
+
+            ground_truth_answer = row[truth_col]
+            ground_truth_context = row["Fundstellen im IT-Grundschutz-Kompendium 2023"]
+
+            contexts = _retrieve_contexts(
+                question, config.top_k, qdrant_client, collection_name, llm_cfg
+            )
+
+            messages = _build_messages(question, contexts, system_prompt)
+            answer = _generate_answer(messages, llm_cfg, config.temperature, config.seed)
+
+            answer_main, answer_followups = _strip_followups(answer)
+            gt_main, gt_followups = _strip_followups(ground_truth_answer)
+
+            record = {
+                "question": question,
+                "answer": answer,
+                "answer_main": answer_main,
+                "answer_followups": answer_followups,
+                "followup_count_generated": _count_followups(answer_followups),
+                "contexts": contexts,
+                "ground_truth_answer": ground_truth_answer,
+                "ground_truth_answer_main": gt_main,
+                "ground_truth_followups": gt_followups,
+                "followup_count_truth": _count_followups(gt_followups),
+                "ground_truth_context": ground_truth_context,
+            }
+            records.append(record)
+            checkpoint_buf.append({
+                "Frage": question,
+                "Antwort": ground_truth_answer,
+                "Antwort (Hauptteil)": gt_main,
+                "Fundstellen": ground_truth_context,
+                "Generierte Antwort": answer,
+                "Generierte Antwort (Hauptteil)": answer_main,
+                "Generierte Anschlussfragen": answer_followups,
+                "followup_count_generated": record["followup_count_generated"],
+                "followup_count_truth": record["followup_count_truth"],
+                "Ermittelte Fundstellen": "\n".join(contexts),
+            })
+
+            if len(checkpoint_buf) >= checkpoint_size:
+                ans_writer.writerows(checkpoint_buf)
+                ans_file.flush()
+                checkpoint_buf.clear()
+                print(f"  [checkpoint] {i} questions written to {intermediate_path.name}")
+            elif i % 10 == 0:
+                print(f"  Processed {i}/{len(rows)} questions...")
+
+        if checkpoint_buf:
+            ans_writer.writerows(checkpoint_buf)
+            ans_file.flush()
+            checkpoint_buf.clear()
+    finally:
+        ans_file.close()
+
+    print(f"  Generated {len(records)} answers")
     print(f"  Saved intermediate answers: {intermediate_path}")
     print()
     
@@ -565,11 +748,32 @@ def generate_evaluation_results(
     
     print("  RAGAS evaluation complete")
     print()
-    
+
+    # Follow-up question evaluation (LLM-as-judge)
+    followup_results: List[List[dict]] = []
+    if config.evaluate_followups:
+        print("Running follow-up question evaluation (LLM-as-judge)...")
+        followup_results = _run_followup_evaluation(
+            records, llm_cfg, config.judge_model, qdrant_client, collection_name
+        )
+        print("  Follow-up evaluation complete")
+        print()
+    else:
+        followup_results = [[] for _ in records]
+
     # Compute statistics
     stats = {
         metric: _compute_statistics([s[metric] for s in scores])
         for metric in ["context_precision", "context_recall", "faithfulness", "answer_correctness"]
+    }
+
+    # Follow-up aggregate stats (only valid scores >= 0)
+    all_ans = [s["answerability"] for fq_list in followup_results for s in fq_list if s.get("answerability", -1) >= 0]
+    all_rel = [s["relevance"] for fq_list in followup_results for s in fq_list if s.get("relevance", -1) >= 0]
+    followup_stats = {
+        "answerability": _compute_statistics(all_ans) if all_ans else {},
+        "relevance": _compute_statistics(all_rel) if all_rel else {},
+        "n_evaluated": len(all_ans),
     }
     
     # Create output directory
@@ -579,8 +783,8 @@ def generate_evaluation_results(
     # Prepare CSV data
     # Use newline as delimiter for retrieved contexts (same as Fundstellen)
     csv_records = []
-    for record, score in zip(records, scores):
-        csv_records.append({
+    for record, score, fq_scores in zip(records, scores, followup_results):
+        row: dict = {
             "Frage": record["question"],
             "Antwort": record["ground_truth_answer"],
             "Antwort (Hauptteil)": record["ground_truth_answer_main"],
@@ -595,18 +799,30 @@ def generate_evaluation_results(
             "context_recall": score["context_recall"],
             "faithfulness": score["faithfulness"],
             "answer_correctness": score["answer_correctness"],
-        })
+        }
+        # Per-follow-up judge scores (up to 3)
+        for j, fq in enumerate(fq_scores, 1):
+            row[f"followup_q{j}"] = fq.get("followup", "")
+            row[f"followup_q{j}_answerability"] = fq.get("answerability", "")
+            row[f"followup_q{j}_relevance"] = fq.get("relevance", "")
+            row[f"followup_q{j}_reason"] = fq.get("reason", "")
+        # Row-level averages
+        valid_ans = [fq["answerability"] for fq in fq_scores if fq.get("answerability", -1) >= 0]
+        valid_rel = [fq["relevance"] for fq in fq_scores if fq.get("relevance", -1) >= 0]
+        row["followup_avg_answerability"] = round(statistics.mean(valid_ans), 3) if valid_ans else None
+        row["followup_avg_relevance"] = round(statistics.mean(valid_rel), 3) if valid_rel else None
+        csv_records.append(row)
     
     # Write full CSV (with retrieved contexts)
     csv_path = output_dir / f"{config.output_name}.csv"
     csv_df = pd.DataFrame(csv_records)
-    csv_df.to_csv(csv_path, sep=";", index=False, encoding="utf-8-sig")
+    csv_df.to_csv(csv_path, sep=";", index=False, encoding="utf-8-sig", decimal=".")
     print(f"Saved full CSV: {csv_path}")
     
     # Write compact CSV (without retrieved contexts)
     csv_compact_path = output_dir / f"{config.output_name}_compact.csv"
     csv_compact_df = csv_df.drop(columns=["Ermittelte Fundstellen"])
-    csv_compact_df.to_csv(csv_compact_path, sep=";", index=False, encoding="utf-8-sig")
+    csv_compact_df.to_csv(csv_compact_path, sep=";", index=False, encoding="utf-8-sig", decimal=".")
     print(f"Saved compact CSV: {csv_compact_path}")
     
     # Generate and write README
@@ -625,6 +841,11 @@ def generate_evaluation_results(
     print(f"Context Recall:     {stats['context_recall']['avg']*100:.1f}% (±{stats['context_recall']['std']*100:.1f}%)")
     print(f"Faithfulness:       {stats['faithfulness']['avg']*100:.1f}% (±{stats['faithfulness']['std']*100:.1f}%)")
     print(f"Answer Correctness: {stats['answer_correctness']['avg']*100:.1f}% (±{stats['answer_correctness']['std']*100:.1f}%)")
+    if followup_stats["n_evaluated"] > 0:
+        fa = followup_stats["answerability"]
+        fr = followup_stats["relevance"]
+        print(f"Followup Answerability: {fa['avg']:.2f}/2.0 (±{fa['std']:.2f}, n={followup_stats['n_evaluated']})")
+        print(f"Followup Relevance:     {fr['avg']:.2f}/2.0 (±{fr['std']:.2f})")
     print("=" * 60)
     
     return csv_path
@@ -663,6 +884,27 @@ def _build_arg_parser() -> "argparse.ArgumentParser":
         default="data/data_evaluation/GSKI_Fragen-Antworten-Fundstellen2.csv",
         help="Path to evaluation CSV (relative to project root or absolute)",
     )
+    parser.add_argument(
+        "--judge-model",
+        default=JUDGE_MODEL_DEFAULT,
+        help=f"Model for LLM-as-judge follow-up evaluation (default: {JUDGE_MODEL_DEFAULT})",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Process only the first N questions (for testing)",
+    )
+    parser.add_argument(
+        "--skip-followup-eval",
+        action="store_true",
+        help="Skip follow-up question evaluation (faster, no judge LLM calls)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip questions already present in the existing _answers.csv (resume after abort)",
+    )
     return parser
 
 
@@ -679,4 +921,8 @@ if __name__ == "__main__":
         temperature=args.temperature,
         seed=args.seed,
         eval_csv_path=args.eval_csv_path,
+        judge_model=args.judge_model,
+        evaluate_followups=not args.skip_followup_eval,
+        limit=args.limit,
+        resume=args.resume,
     )

@@ -125,6 +125,24 @@ def load_vectordb_config() -> VectorDBConfig:
     )
 
 
+def _resolve_model(model: str) -> tuple[str, bool]:
+    """Return (model_name_for_api, use_custom_provider).
+
+    Two routing patterns for IONOS models:
+    - Double prefix  openai/openai/<name>  → IONOS model lives under openai/ namespace
+      (e.g. openai/gpt-oss-120b). Let litellm strip one prefix naturally; do NOT set
+      custom_llm_provider or it would strip again and send bare <name>.
+    - Single prefix  openai/<name>         → standard model, but litellm may normalise
+      known names (e.g. Meta-Llama-3.1-8B). Strip prefix ourselves and pass
+      custom_llm_provider="openai" to bypass litellm's model-name normalisation.
+    """
+    if model.startswith("openai/openai/"):
+        return model, False          # litellm strips one openai/ → sends openai/<name>
+    if model.startswith("openai/"):
+        return model[len("openai/"):], True   # we strip, then bypass normalisation
+    return model, False
+
+
 def get_embeddings(
     texts: Iterable[str],
     config: Optional[LLMConfig] = None,
@@ -138,16 +156,19 @@ def get_embeddings(
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
 
+    emb_model, use_custom = _resolve_model(cfg.embedding_model)
     embeddings: List[List[float]] = []
     for start in range(0, len(all_texts), batch_size):
         print(f"Processing embeddings {start} to {min(start + batch_size, len(all_texts))} / {len(all_texts)}")
         batch = all_texts[start : start + batch_size]
+        extra = {"custom_llm_provider": "openai"} if use_custom else {}
         response = embedding(
-            model=cfg.embedding_model,
+            model=emb_model,
             input=batch,
             encoding_format="float",
             api_key=cfg.api_key,
             api_base=cfg.api_base,
+            **extra,
         )
         embeddings.extend([item["embedding"] for item in response["data"]])
     return embeddings
@@ -158,12 +179,15 @@ def chat_completion(messages: List[dict[str, Any]], config: Optional[LLMConfig] 
 
     cfg = config or load_llm_config()
     _ensure_litellm_model_costs(cfg)
-    print(f"Using model: {cfg.model}")
+    model_name, use_custom = _resolve_model(cfg.model)
+    print(f"Using model: {cfg.model} -> {model_name} (custom_provider={use_custom})")
+    extra = {"custom_llm_provider": "openai"} if use_custom else {}
     return completion(
-        model=cfg.model,
+        model=model_name,
         messages=messages,
         api_key=cfg.api_key,
         api_base=cfg.api_base,
+        **extra,
         **kwargs,
     )
 

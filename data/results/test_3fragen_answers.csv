@@ -1,0 +1,319 @@
+﻿Frage;Antwort;Antwort (Hauptteil);Fundstellen;Generierte Antwort;Generierte Antwort (Hauptteil);Generierte Anschlussfragen;followup_count_generated;followup_count_truth;Ermittelte Fundstellen
+Welche grundlegenden Sicherheitsmaßnahmen müssen beim Einrichten eines Webservers ergriffen werden?;Nach der Installation eines Webservers muss eine sichere Grundkonfiguration vorgenommen werden. Dazu gehört die Zuweisung des Webserver-Prozesses einem Konto mit minimalen Rechten, die Ausführung in einer gekapselten Umgebung (sofern unterstützt), sowie die Deaktivierung nicht benötigter Module und Funktionen. Ist eine gekapselte Umgebung nicht möglich, sollte jeder Webserver auf einem eigenen physischen oder virtuellen Server laufen. Dem Webserver-Dienst MÜSSEN alle nicht notwendige Schreibberechtigungen entzogen werden. Nicht benötigte Module und Funktionen des Webservers MÜSSEN deaktiviert werden.;Nach der Installation eines Webservers muss eine sichere Grundkonfiguration vorgenommen werden. Dazu gehört die Zuweisung des Webserver-Prozesses einem Konto mit minimalen Rechten, die Ausführung in einer gekapselten Umgebung (sofern unterstützt), sowie die Deaktivierung nicht benötigter Module und Funktionen. Ist eine gekapselte Umgebung nicht möglich, sollte jeder Webserver auf einem eigenen physischen oder virtuellen Server laufen. Dem Webserver-Dienst MÜSSEN alle nicht notwendige Schreibberechtigungen entzogen werden. Nicht benötigte Module und Funktionen des Webservers MÜSSEN deaktiviert werden.;"APP.3.2.A1 Sichere Konfiguration eines Webservers (B)
+Nachdem der IT-Betrieb einen Webserver installiert hat, MUSS er eine sichere Grundkonfiguration vornehmen. Dazu MUSS er insbesondere den Webserver-Prozess einem Konto mit minimalen Rechten zuweisen. Der Webserver MUSS in einer gekapselten Umgebung ausgeführt werden, sofern dies vom Betriebssystem unterstützt wird. Ist dies nicht möglich, SOLLTE jeder Webserver auf einem eigenen physischen oder virtuellen Server ausgeführt werden. Dem Webserver-Dienst MÜSSEN alle nicht notwendige Schreibberechtigungen entzogen werden.
+Nicht benötigte Module und Funktionen des Webservers MÜSSEN deaktiviert werden.";"- Der Webserver‑Prozess MUSS einem Konto mit minimalen Rechten zugewiesen werden Quelle: Sichere Konfiguration eines Webservers (S.1)  
+- Der Webserver MUSS in einer gekapselten Umgebung ausgeführt werden, sofern das Betriebssystem dies unterstützt; ist das nicht möglich, SOLLTE jeder Webserver auf einem eigenen physischen oder virtuellen Server betrieben werden Quelle: Sichere Konfiguration eines Webservers (S.1)  
+- Dem Webserver‑Dienst MÜSSEN alle nicht notwendigen Schreibberechtigungen entzogen werden Quelle: Sichere Konfiguration eines Webservers (S.1)  
+- Nicht benötigte Module und Funktionen des Webservers MÜSSEN deaktiviert werden Quelle: Sichere Konfiguration eines Webservers (S.1)  
+
+Anschlussfragen:
+1. Welche Maßnahmen zur Absicherung der Netzwerkverbindung eines Webservers werden im Baustein NET.1.1 empfohlen?
+2. Wie sollten kryptografische Schlüssel für HTTPS‑Verbindungen gemäß dem Baustein CON.1 verwaltet werden?
+3. Welche spezifischen Anforderungen gelten für die Protokollierung von Webserver‑Ereignissen im Baustein SYS.1.1?";"- Der Webserver‑Prozess MUSS einem Konto mit minimalen Rechten zugewiesen werden Quelle: Sichere Konfiguration eines Webservers (S.1)  
+- Der Webserver MUSS in einer gekapselten Umgebung ausgeführt werden, sofern das Betriebssystem dies unterstützt; ist das nicht möglich, SOLLTE jeder Webserver auf einem eigenen physischen oder virtuellen Server betrieben werden Quelle: Sichere Konfiguration eines Webservers (S.1)  
+- Dem Webserver‑Dienst MÜSSEN alle nicht notwendigen Schreibberechtigungen entzogen werden Quelle: Sichere Konfiguration eines Webservers (S.1)  
+- Nicht benötigte Module und Funktionen des Webservers MÜSSEN deaktiviert werden Quelle: Sichere Konfiguration eines Webservers (S.1)";"1. Welche Maßnahmen zur Absicherung der Netzwerkverbindung eines Webservers werden im Baustein NET.1.1 empfohlen?
+2. Wie sollten kryptografische Schlüssel für HTTPS‑Verbindungen gemäß dem Baustein CON.1 verwaltet werden?
+3. Welche spezifischen Anforderungen gelten für die Protokollierung von Webserver‑Ereignissen im Baustein SYS.1.1?";3;0;"Sichere Konfiguration eines Webservers
+
+Nachdem der IT-Betrieb einen Webserver installiert hat, MUSS er eine sichere Grundkonfiguration vornehmen. Dazu MUSS er insbesondere den Webserver-Prozess einem Konto mit minimalen Rechten zuweisen. Der Webserver MUSS in einer gekapselten Umgebung ausgeführt werden, sofern dies vom Betriebssystem unterstützt wird. Ist dies nicht möglich, SOLLTE jeder Webserver auf einem eigenen physischen oder virtuellen Server ausgeführt werden.
+
+Dem Webserver-Dienst MÜSSEN alle nicht notwendige Schreibberechtigungen entzogen werden. Nicht benötigte Module und Funktionen des Webservers MÜSSEN deaktiviert werden.
+Webserver
+
+Einleitung
+Ein Webserver ist die Kernkomponente jedes Webangebotes, er nimmt Anfragen der Clients entgegen und liefert die entsprechenden Inhalte zurück. Die Daten werden in der Regel über das Hypertext Transfer Protocol (HTTP) oder dessen mit Transport Layer Security (TLS) verschlüsselte Variante HTTP Secure (HTTPS) transportiert. Da Webserver eine einfache Schnittstelle zwischen Serveranwendungen und Clients bieten, werden sie auch häufig für interne Informationen und Anwendungen in Institutionsnetzen, wie dem Intranet, eingesetzt.
+
+Webserver sind in der Regel direkt im Internet verfügbar und bieten somit eine exponierte Angriffsfläche. Deswegen müssen sie durch geeignete Schutzmaßnahmen abgesichert werden.
+
+Zielsetzung
+Ziel dieses Bausteins ist der Schutz des Webservers und der Informationen, die durch den Webserver bereitgestellt oder damit verarbeitet werden.
+
+Abgrenzung Und Modellierung
+Der Baustein muss auf alle Webserver des Informationsverbunds angewendet werden.
+
+Die Bezeichnung Webserver wird sowohl für die Software verwendet, welche die HTTP-Anfragen beantwortet, als auch für die IT-Systeme, auf denen diese Software ausgeführt wird. In diesem Baustein wird vorrangig die Webserver-Software betrachtet. Sicherheitsaspekte des IT-Systems, auf dem die Webserver-Software installiert ist, werden im Baustein SYS.1.1 Allgemeiner Server sowie den jeweiligen betriebssystemspezifischen Bausteinen betrachtet.
+
+Empfehlungen, wie Webserver in die Netzarchitektur zu integrieren und mit Firewalls abzusichern sind, finden sich in den Bausteinen NET.1.1 Netzarchitektur und -design bzw. NET.3.2 Firewall.
+
+Der Baustein behandelt grundsätzliche Aspekte, die für die Bereitstellung von Webinhalten wichtig sind. Dynamische Inhalte, die durch Webanwendungen bereitgestellt werden, sind nicht Gegenstand des vorliegenden Bausteins. Diese werden im Baustein APP.3.1 Webanwendungen und Webservicesbehandelt. Ebenso werden hier keine Webservices betrachtet.
+
+Webbrowser werden in diesem Baustein nicht betrachtet. Anforderungen dazu sind im Baustein APP.1.2 Webbrowser zu finden.
+
+In der Regel werden die Verbindungen zu Webservern verschlüsselt. Der Baustein CON.1 Kryptokonzeptbeschreibt, wie die dazu notwendigen kryptografischen Schlüssel sicher verwaltet werden können.
+
+Werden Webserver nicht selbst betrieben, sondern über einen Hosting-Anbieter bereitgestellt, ist der Baustein OPS.2.3 Nutzung von Outsourcing zu beachten.
+
+Oft werden Authentisierungsmechanismen für Webserver verwendet. Ergänzende Anforderungen dazu finden sich im Baustein ORP.4 Identitäts- und Berechtigungsmanagement.
+Beschaffung von Webanwendungen und Webservices
+
+Zusätzlich zu den allgemeinen Aspekten der Beschaffung von Software SOLLTE die Institution mindestens folgendes bei der Beschaffung von Webanwendungen und Webservices berücksichtigen:
+
+• sichere Eingabevalidierung und Ausgabekodierung,
+
+• sicheres Session-Management,
+
+• sichere kryptografische Verfahren,
+
+• sichere Authentisierungsverfahren,
+
+• sichere Verfahren zum serverseitigen Speichern von Zugangsdaten,
+
+• geeignetes Berechtigungsmanagement,
+
+• ausreichende Protokollierungsmöglichkeiten,
+
+• regelmäßige Sicherheitsupdates durch den Entwickelnden der Software,
+
+• Schutzmechanismen vor verbreiteten Angriffen auf Webanwendungen und Webservices sowie
+
+• Zugriff auf den Quelltext der Webanwendung oder des Webservices.
+Sichere Konfiguration von Windows Server 2012
+
+Mehrere wesentliche Funktionen bzw. Rollen SOLLTEN NICHT durch einen einzigen Server erfüllt, sondern geeignet aufgeteilt werden. Vor Inbetriebnahme SOLLTE das System grundlegend gehärtet werden. Dafür SOLLTEN funktionsspezifische und institutionsweite Sicherheitsvorlagen erstellt und gepflegt werden, die auf die Server ausgerollt werden. Der Internet Explorer SOLLTE auf dem Server nur in der Enhanced Security Configuration und im Enhanced Protected Mode genutzt werden.
+Erstellung einer Sicherheitsrichtlinie für den Einsatz von Terminalservern
+
+Für den Einsatz von Terminalservern MUSS eine Sicherheitsrichtlinie erstellt werden. Bei der Erstellung der Sicherheitsrichtlinie MÜSSEN mindestens folgende Punkte berücksichtigt werden:
+
+• Anwendungen, die auf Terminalservern bereitgestellt werden dürfen,
+
+• Anwendungen, die gemeinsam auf Terminalservern bereitgestellt werden dürfen,
+
+• Anforderungen an die Sicherheit von Clients, auf denen die Terminal-Client-Software ausgeführt wird,
+
+• physisches Umfeld, in dem die Clients eingesetzt werden dürfen,
+
+• Netze, aus denen heraus Kommunikationsverbindungen zu den Terminalservern initiiert werden dürfen,
+
+• Netze, in die Anwendungen auf den Terminalservern kommunizieren dürfen,
+
+• Kommunikationsprotokolle, die zwischen Clients und Terminalservern erlaubt sind,
+
+• Verschlüsselungsmechanismen und Authentisierungsmethoden, die zwischen Clients und Terminalservern zu benutzen sind,
+
+• Möglichkeiten, wie Dateien und Anwendungsdaten zusätzlich zur Bildschirmausgabe über das Terminalserver-Protokoll übertragen werden dürfen sowie
+
+• Peripheriegeräte, die neben Ein- und Ausgabegeräten zusätzlich an den Client angebunden werden dürfen.
+Auswahl eines geeigneten Webhosters
+
+Betreibt die Institution den Webserver nicht selbst, sondern nutzt Angebote externer Unternehmen im Rahmen von Webhosting, SOLLTE die Institution bei der Auswahl eines geeigneten Webhosters auf folgende Punkte achten:
+
+• Es SOLLTE vertraglich geregelt werden, wie die Dienste zu erbringen sind. Dabei SOLLTEN Sicherheitsaspekte innerhalb des Vertrags schriftlich in einem Service Level Agreement (SLA) festgehalten werden.
+
+• Die eingesetzten IT-Systeme SOLLTEN vom Webhoster regelmäßig kontrolliert und gewartet werden. Der Webhoster SOLLTE dazu verpflichtet werden, bei technischen Problemen oder einer Kompromittierung von Kundschaftssystemen zeitnah zu reagieren.
+
+• Der Webhoster SOLLTE grundlegende technische und organisatorische Maßnahmen umsetzen, um seinen Informationsverbund zu schützen.
+Sichere Konfiguration und Nutzung eines eingebetteten Webservers
+
+In IoT-Geräten integrierte Webserver SOLLTEN möglichst restriktiv konfiguriert sein. Der Webserver SOLLTE, soweit möglich, NICHT unter einem privilegierten Konto betrieben werden.
+Sichere Installation und Grundkonfiguration von Servern
+
+Der vollständige Installations- und Konfigurationsvorgang SOLLTE soweit wie möglich innerhalb einer gesonderten und von Produktivsystemen abgetrennten Installationsumgebung vorgenommen werden. Die Konfiguration des Betriebssystems SOLLTE vor produktiver Inbetriebnahme des Servers bereits vorgenommen sein.
+
+Mehrere wesentliche Funktionen und Rollen SOLLTEN NICHT durch einen einzigen Server erfüllt, sondern geeignet aufgeteilt werden.
+
+Alle sicherheitsrelevanten Einstellungen der aktivierten Dienste und Funktionen (vgl. SYS.1.1.A6 Deaktivierung nicht benötigter Dienste) SOLLTEN entsprechend den Vorgaben der Sicherheitsrichtlinie für Server (siehe SYS.1.1.A11 Festlegung einer Sicherheitsrichtlinie für Server) konfiguriert, getestet und regelmäßig inhaltlich überprüft werden. Dabei SOLLTE der Server unter Berücksichtigung der Empfehlungen des Betriebssystemherstellers und des voreingestellten Standardverhaltens konfiguriert werden, sofern dies nicht anderen Anforderungen aus dem IT-Grundschutz oder der Organisation widerspricht. Die Entscheidungen SOLLTEN dokumentiert und begründet werden. Konfigurationsoptionen SOLLTEN in jedem Fall gesetzt werden, auch dann, wenn das voreingestellte Standardverhalten dadurch nicht verändert wird.
+
+Sofern der Server eine Verbindung in das Internet benötigt oder aus dem Internet erreichbar sein muss, SOLLTE er erst mit dem Internet verbunden werden, nachdem die Installation und die Konfiguration abgeschlossen sind."
+Wie müssen Webserver-Dateien geschützt werden?;Alle Dateien auf dem Webserver, insbesondere Skripte und Konfigurationsdateien, müssen so geschützt werden, dass sie nicht unbefugt gelesen oder verändert werden können. Der Webserver muss so konfiguriert sein, dass er nur Dateien aus dem definierten WWW-Wurzelverzeichnis ausliefert. Nicht benötigte Funktionen zur Verzeichnisaufzählung müssen deaktiviert werden, und vertrauliche Daten dürfen nicht in öffentlichen Verzeichnissen gespeichert werden. Regelmäßige Überprüfungen sind erforderlich.;Alle Dateien auf dem Webserver, insbesondere Skripte und Konfigurationsdateien, müssen so geschützt werden, dass sie nicht unbefugt gelesen oder verändert werden können. Der Webserver muss so konfiguriert sein, dass er nur Dateien aus dem definierten WWW-Wurzelverzeichnis ausliefert. Nicht benötigte Funktionen zur Verzeichnisaufzählung müssen deaktiviert werden, und vertrauliche Daten dürfen nicht in öffentlichen Verzeichnissen gespeichert werden. Regelmäßige Überprüfungen sind erforderlich.;"APP.3.2.A2 Schutz der Webserver-Dateien (B)
+Der IT-Betrieb MUSS alle Dateien auf dem Webserver, insbesondere Skripte und Konfigurationsdateien, so schützen, dass sie nicht unbefugt gelesen und geändert werden können. Es MUSS sichergestellt werden, dass Webanwendungen nur auf einen definierten Verzeichnisbaum
+zugreifen können (WWW-Wurzelverzeichnis). Der Webserver MUSS so konfiguriert sein, dass er nur Dateien ausliefert, die sich innerhalb des WWW-Wurzelverzeichnisses befinden.Der IT-Betrieb MUSS alle nicht benötigten Funktionen, die Verzeichnisse auflisten, deaktivieren.
+Vertrauliche Daten MÜSSEN vor unberechtigtem Zugriff geschützt werden. Insbesondere MUSS der IT-Betrieb sicherstellen, dass vertrauliche Dateien nicht in öffentlichen Verzeichnissen des Webservers liegen. Der IT-Betrieb MUSS regelmäßig überprüfen, ob vertrauliche Dateien in öffentlichen Verzeichnissen gespeichert wurden.";"- Alle Dateien auf dem Webserver, insbesondere Skripte und Konfigurationsdateien, MÜSSEN so geschützt werden, dass sie nicht unbefugt gelesen und geändert werden können Quelle: Schutz der Webserver-Dateien (S.1)  
+- Der IT‑Betrieb MÜSSEN sicherstellen, dass Webanwendungen nur auf den definierten WWW‑Wurzelverzeichnis‑Baum zugreifen können und der Webserver nur Dateien innerhalb dieses Verzeichnisses ausliefert Quelle: Schutz der Webserver-Dateien (S.3)  
+- Nicht benötigte Verzeichnis‑Listing‑Funktionen MÜSSEN deaktiviert werden; vertrauliche Daten DÜRFEN nicht in öffentlichen Verzeichnissen liegen und regelmäßig auf solche Verstöße geprüft werden Quelle: Schutz der Webserver-Dateien (S.5-7)  
+- Vertrauliche Daten MÜSSEN nur per HTTP‑POST übertragen werden Quelle: Schutz vertraulicher Daten (S.1)  
+- Entwickelnde MÜSSEN per Direktiven verhindern, dass schützenswerte Daten clientseitig zwischengespeichert werden, und dass vertrauliche Formulardaten im Klartext angezeigt werden; die Webanwendung SOLLTE das Speichern vertraulicher Daten im Browser verhindern Quelle: Schutz vertraulicher Daten (S.2-4)  
+- Zugangsdaten zur Webanwendung MÜSSEN serverseitig mit sicheren kryptografischen Algorithmen (Salted Hash) geschützt werden Quelle: Schutz vertraulicher Daten (S.5)  
+- Quelltextdateien der Webanwendung MÜSSEN vor unerlaubtem Abruf geschützt werden Quelle: Schutz vertraulicher Daten (S.6)  
+
+Anschlussfragen:  
+1. Welche Maßnahmen zur sicheren Grundkonfiguration eines Webservers sind im Baustein beschrieben?  
+2. Wie wird die Isolation von Webserver‑Prozessen in einer gekapselten Umgebung umgesetzt?  
+3. Welche Empfehlungen gibt es zum Schutz von Datei‑Uploads und -Downloads?";"- Alle Dateien auf dem Webserver, insbesondere Skripte und Konfigurationsdateien, MÜSSEN so geschützt werden, dass sie nicht unbefugt gelesen und geändert werden können Quelle: Schutz der Webserver-Dateien (S.1)  
+- Der IT‑Betrieb MÜSSEN sicherstellen, dass Webanwendungen nur auf den definierten WWW‑Wurzelverzeichnis‑Baum zugreifen können und der Webserver nur Dateien innerhalb dieses Verzeichnisses ausliefert Quelle: Schutz der Webserver-Dateien (S.3)  
+- Nicht benötigte Verzeichnis‑Listing‑Funktionen MÜSSEN deaktiviert werden; vertrauliche Daten DÜRFEN nicht in öffentlichen Verzeichnissen liegen und regelmäßig auf solche Verstöße geprüft werden Quelle: Schutz der Webserver-Dateien (S.5-7)  
+- Vertrauliche Daten MÜSSEN nur per HTTP‑POST übertragen werden Quelle: Schutz vertraulicher Daten (S.1)  
+- Entwickelnde MÜSSEN per Direktiven verhindern, dass schützenswerte Daten clientseitig zwischengespeichert werden, und dass vertrauliche Formulardaten im Klartext angezeigt werden; die Webanwendung SOLLTE das Speichern vertraulicher Daten im Browser verhindern Quelle: Schutz vertraulicher Daten (S.2-4)  
+- Zugangsdaten zur Webanwendung MÜSSEN serverseitig mit sicheren kryptografischen Algorithmen (Salted Hash) geschützt werden Quelle: Schutz vertraulicher Daten (S.5)  
+- Quelltextdateien der Webanwendung MÜSSEN vor unerlaubtem Abruf geschützt werden Quelle: Schutz vertraulicher Daten (S.6)";"1. Welche Maßnahmen zur sicheren Grundkonfiguration eines Webservers sind im Baustein beschrieben?  
+2. Wie wird die Isolation von Webserver‑Prozessen in einer gekapselten Umgebung umgesetzt?  
+3. Welche Empfehlungen gibt es zum Schutz von Datei‑Uploads und -Downloads?";3;0;"Schutz der Webserver-Dateien
+
+Der IT-Betrieb MUSS alle Dateien auf dem Webserver, insbesondere Skripte und Konfigurationsdateien, so schützen, dass sie nicht unbefugt gelesen und geändert werden können.
+
+Es MUSS sichergestellt werden, dass Webanwendungen nur auf einen definierten Verzeichnisbaum zugreifen können (WWW-Wurzelverzeichnis). Der Webserver MUSS so konfiguriert sein, dass er nur Dateien ausliefert, die sich innerhalb des WWW-Wurzelverzeichnisses befinden.
+
+Der IT-Betrieb MUSS alle nicht benötigten Funktionen, die Verzeichnisse auflisten, deaktivieren. Vertrauliche Daten MÜSSEN vor unberechtigtem Zugriff geschützt werden. Insbesondere MUSS der IT-Betrieb sicherstellen, dass vertrauliche Dateien nicht in öffentlichen Verzeichnissen des Webservers liegen. Der IT-Betrieb MUSS regelmäßig überprüfen, ob vertrauliche Dateien in öffentlichen Verzeichnissen gespeichert wurden.
+Schutz vertraulicher Daten
+
+Die Entwickelnden MÜSSEN sicherstellen, dass vertrauliche Daten von den Clients zu den Servern nur mit der HTTP-Post-Methode übertragen werden.
+
+Entwickelnde MÜSSEN durch Direktiven in der Webanwendung gewährleisten, dass clientseitig keine schützenswerten Daten zwischengespeichert werden. Entwickelnde MÜSSEN sicherstellen, dass in Formularen keine vertraulichen Formulardaten im Klartext angezeigt werden. Die Webanwendung SOLLTE verhindern, dass vertrauliche Daten vom Webbrowser unerwartet gespeichert werden. Sämtliche Zugangsdaten der Webanwendung MÜSSEN serverseitig mithilfe von sicheren kryptografischen Algorithmen vor unbefugtem Zugriff geschützt werden (Salted Hash). Die Dateien mit den Quelltexten der Webanwendung MÜSSEN vor unerlaubten Abrufen geschützt werden.
+Webserver
+
+Einleitung
+Ein Webserver ist die Kernkomponente jedes Webangebotes, er nimmt Anfragen der Clients entgegen und liefert die entsprechenden Inhalte zurück. Die Daten werden in der Regel über das Hypertext Transfer Protocol (HTTP) oder dessen mit Transport Layer Security (TLS) verschlüsselte Variante HTTP Secure (HTTPS) transportiert. Da Webserver eine einfache Schnittstelle zwischen Serveranwendungen und Clients bieten, werden sie auch häufig für interne Informationen und Anwendungen in Institutionsnetzen, wie dem Intranet, eingesetzt.
+
+Webserver sind in der Regel direkt im Internet verfügbar und bieten somit eine exponierte Angriffsfläche. Deswegen müssen sie durch geeignete Schutzmaßnahmen abgesichert werden.
+
+Zielsetzung
+Ziel dieses Bausteins ist der Schutz des Webservers und der Informationen, die durch den Webserver bereitgestellt oder damit verarbeitet werden.
+
+Abgrenzung Und Modellierung
+Der Baustein muss auf alle Webserver des Informationsverbunds angewendet werden.
+
+Die Bezeichnung Webserver wird sowohl für die Software verwendet, welche die HTTP-Anfragen beantwortet, als auch für die IT-Systeme, auf denen diese Software ausgeführt wird. In diesem Baustein wird vorrangig die Webserver-Software betrachtet. Sicherheitsaspekte des IT-Systems, auf dem die Webserver-Software installiert ist, werden im Baustein SYS.1.1 Allgemeiner Server sowie den jeweiligen betriebssystemspezifischen Bausteinen betrachtet.
+
+Empfehlungen, wie Webserver in die Netzarchitektur zu integrieren und mit Firewalls abzusichern sind, finden sich in den Bausteinen NET.1.1 Netzarchitektur und -design bzw. NET.3.2 Firewall.
+
+Der Baustein behandelt grundsätzliche Aspekte, die für die Bereitstellung von Webinhalten wichtig sind. Dynamische Inhalte, die durch Webanwendungen bereitgestellt werden, sind nicht Gegenstand des vorliegenden Bausteins. Diese werden im Baustein APP.3.1 Webanwendungen und Webservicesbehandelt. Ebenso werden hier keine Webservices betrachtet.
+
+Webbrowser werden in diesem Baustein nicht betrachtet. Anforderungen dazu sind im Baustein APP.1.2 Webbrowser zu finden.
+
+In der Regel werden die Verbindungen zu Webservern verschlüsselt. Der Baustein CON.1 Kryptokonzeptbeschreibt, wie die dazu notwendigen kryptografischen Schlüssel sicher verwaltet werden können.
+
+Werden Webserver nicht selbst betrieben, sondern über einen Hosting-Anbieter bereitgestellt, ist der Baustein OPS.2.3 Nutzung von Outsourcing zu beachten.
+
+Oft werden Authentisierungsmechanismen für Webserver verwendet. Ergänzende Anforderungen dazu finden sich im Baustein ORP.4 Identitäts- und Berechtigungsmanagement.
+Schutz vertraulicher Daten
+
+Der IT-Betrieb MUSS sicherstellen, dass Zugangsdaten zur Webanwendung oder zum Webservice serverseitig mithilfe von sicheren kryptografischen Algorithmen vor unbefugtem Zugriff geschützt werden. Dazu MÜSSEN Salted Hash-Verfahren verwendet werden.
+
+Die Dateien mit den Quelltexten der Webanwendung oder des Webservices MÜSSEN vor unerlaubten Abrufen geschützt werden.
+Absicherung von Datei-Uploads und -Downloads
+
+Alle mithilfe des Webservers veröffentlichten Dateien MÜSSEN vorher auf Schadprogramme geprüft werden. Es MUSS eine Maximalgröße für Datei-Uploads spezifiziert sein. Für Uploads MUSS genügend Speicherplatz reserviert werden.
+Sichere Konfiguration eines Webservers
+
+Nachdem der IT-Betrieb einen Webserver installiert hat, MUSS er eine sichere Grundkonfiguration vornehmen. Dazu MUSS er insbesondere den Webserver-Prozess einem Konto mit minimalen Rechten zuweisen. Der Webserver MUSS in einer gekapselten Umgebung ausgeführt werden, sofern dies vom Betriebssystem unterstützt wird. Ist dies nicht möglich, SOLLTE jeder Webserver auf einem eigenen physischen oder virtuellen Server ausgeführt werden.
+
+Dem Webserver-Dienst MÜSSEN alle nicht notwendige Schreibberechtigungen entzogen werden. Nicht benötigte Module und Funktionen des Webservers MÜSSEN deaktiviert werden.
+Schutz vor Denial-of-Service-Angriffen
+
+Der Webserver SOLLTE ständig überwacht werden. Des Weiteren SOLLTEN Maßnahmen definiert und umgesetzt werden, die DDoS-Angriffe verhindern oder zumindest abschwächen.
+Authentisierung
+
+Wenn sich Clients mit Hilfe von Passwörtern am Webserver authentisieren, MÜSSEN diese kryptografisch gesichert und vor unbefugtem Zugriff geschützt gespeichert werden."
+Welche Sicherheitsanforderungen gelten für Datei-Uploads und -Downloads über einen Webserver?;Alle mithilfe des Webservers veröffentlichten Dateien müssen vorher auf Schadsoftware geprüft werden. Es muss eine Maximalgröße für Datei-Uploads festgelegt und ausreichend Speicherplatz reserviert sein.;Alle mithilfe des Webservers veröffentlichten Dateien müssen vorher auf Schadsoftware geprüft werden. Es muss eine Maximalgröße für Datei-Uploads festgelegt und ausreichend Speicherplatz reserviert sein.;"APP.3.2.A3 Absicherung von Datei-Uploads und -Downloads (B)
+Alle mithilfe des Webservers veröffentlichten Dateien MÜSSEN vorher auf Schadprogramme geprüft werden. Es MUSS eine Maximalgröße für Datei-Uploads spezifiziert sein. Für Uploads MUSS genügend Speicherplatz reserviert werden.";Im bereitgestellten Kontext nicht enthalten;Im bereitgestellten Kontext nicht enthalten;;0;0;"Absicherung von Datei-Uploads und -Downloads
+
+Alle mithilfe des Webservers veröffentlichten Dateien MÜSSEN vorher auf Schadprogramme geprüft werden. Es MUSS eine Maximalgröße für Datei-Uploads spezifiziert sein. Für Uploads MUSS genügend Speicherplatz reserviert werden.
+Webserver
+
+Einleitung
+Ein Webserver ist die Kernkomponente jedes Webangebotes, er nimmt Anfragen der Clients entgegen und liefert die entsprechenden Inhalte zurück. Die Daten werden in der Regel über das Hypertext Transfer Protocol (HTTP) oder dessen mit Transport Layer Security (TLS) verschlüsselte Variante HTTP Secure (HTTPS) transportiert. Da Webserver eine einfache Schnittstelle zwischen Serveranwendungen und Clients bieten, werden sie auch häufig für interne Informationen und Anwendungen in Institutionsnetzen, wie dem Intranet, eingesetzt.
+
+Webserver sind in der Regel direkt im Internet verfügbar und bieten somit eine exponierte Angriffsfläche. Deswegen müssen sie durch geeignete Schutzmaßnahmen abgesichert werden.
+
+Zielsetzung
+Ziel dieses Bausteins ist der Schutz des Webservers und der Informationen, die durch den Webserver bereitgestellt oder damit verarbeitet werden.
+
+Abgrenzung Und Modellierung
+Der Baustein muss auf alle Webserver des Informationsverbunds angewendet werden.
+
+Die Bezeichnung Webserver wird sowohl für die Software verwendet, welche die HTTP-Anfragen beantwortet, als auch für die IT-Systeme, auf denen diese Software ausgeführt wird. In diesem Baustein wird vorrangig die Webserver-Software betrachtet. Sicherheitsaspekte des IT-Systems, auf dem die Webserver-Software installiert ist, werden im Baustein SYS.1.1 Allgemeiner Server sowie den jeweiligen betriebssystemspezifischen Bausteinen betrachtet.
+
+Empfehlungen, wie Webserver in die Netzarchitektur zu integrieren und mit Firewalls abzusichern sind, finden sich in den Bausteinen NET.1.1 Netzarchitektur und -design bzw. NET.3.2 Firewall.
+
+Der Baustein behandelt grundsätzliche Aspekte, die für die Bereitstellung von Webinhalten wichtig sind. Dynamische Inhalte, die durch Webanwendungen bereitgestellt werden, sind nicht Gegenstand des vorliegenden Bausteins. Diese werden im Baustein APP.3.1 Webanwendungen und Webservicesbehandelt. Ebenso werden hier keine Webservices betrachtet.
+
+Webbrowser werden in diesem Baustein nicht betrachtet. Anforderungen dazu sind im Baustein APP.1.2 Webbrowser zu finden.
+
+In der Regel werden die Verbindungen zu Webservern verschlüsselt. Der Baustein CON.1 Kryptokonzeptbeschreibt, wie die dazu notwendigen kryptografischen Schlüssel sicher verwaltet werden können.
+
+Werden Webserver nicht selbst betrieben, sondern über einen Hosting-Anbieter bereitgestellt, ist der Baustein OPS.2.3 Nutzung von Outsourcing zu beachten.
+
+Oft werden Authentisierungsmechanismen für Webserver verwendet. Ergänzende Anforderungen dazu finden sich im Baustein ORP.4 Identitäts- und Berechtigungsmanagement.
+Webanwendungen und Webservices
+
+Einleitung
+Webanwendungen bieten bestimmte Funktionen und dynamische (sich verändernde) Inhalte. Dazu nutzen Webanwendungen die Internetprotokolle HTTP (Hypertext Transfer Protocol) oder HTTPS. Bei HTTPS wird die Verbindung durch das Protokoll TLS (Transport Layer Security) kryptografisch abgesichert. Webanwendungen stellen auf einem Server Dokumente und Bedienoberflächen, z. B. in Form von Eingabemasken, bereit und liefern diese auf Anfrage an entsprechende Programme auf den Clients aus, wie z. B. an Webbrowser.
+
+Webservices sind Anwendungen, die das HTTP(S)-Protokoll verwenden, um Daten für andere Anwendungen bereitzustellen. In der Regel werden sie nicht unmittelbar durch Benutzende angesteuert.
+
+Um eine Webanwendung oder einen Webservice zu betreiben, sind in der Regel mehrere Komponenten notwendig. Üblich sind Webserver, um Daten auszuliefern und Applikationsserver, um die eigentliche Anwendung oder den Webservice zu betreiben. Außerdem werden zusätzliche Hintergrundsysteme benötigt, die oft als Datenquellen über unterschiedliche Schnittstellen angebunden sind, z. B. Datenbanken oder Verzeichnisdienste.
+
+Webanwendungen und Webservices werden sowohl in öffentlichen Datennetzen als auch in lokalen Netzen einer Institution (Intranet) eingesetzt, um Daten und Anwendungen bereitzustellen. In der Regel müssen sich Clients authentisieren, um auf eine Webanwendung oder einen Webservice zugreifen zu können.
+
+Zielsetzung
+Ziel dieses Bausteins ist es, Webanwendungen und Webservices sicher einzusetzen sowie Informationen zu schützen, die durch sie verarbeitet werden.
+
+Abgrenzung Und Modellierung
+Der Baustein ist auf jede Webanwendung und jeden Webservice anzuwenden, die im Informationsverbund eingesetzt werden.
+
+Anforderungen an Webserver und an die redaktionelle Planung eines Webauftritts werden in diesem Baustein nicht behandelt. Sie sind im Baustein APP.3.2 Webserver zu finden. Die Entwicklung von Webanwendungen wird im Baustein CON.10 Entwicklung von Webanwendungen behandelt.
+
+Webservice-Schnittstellen werden oft via Representational State Transfer (REST) und Simple Object Access Protocol (SOAP) realisiert. In diesem Baustein werden nur REST-basierte Webservices betrachten. Der Fokus liegt dabei auf der Lebenszyklusphase „Betrieb“. Sicherheitsanforderungen, die sich beispielsweise aus der Planung und Konzeption sowie Aussonderung und Notfallvorsorge ergeben, werden in diesem Baustein nicht betrachtet, sondern müssen gesondert im Rahmen einer Risikoanalyse ermittelt werden.
+
+Allgemeine Anforderungen an die Auswahl von Software werden im Baustein APP.6 Allgemeine Softwarebetrachtet.
+Fileserver
+
+Einleitung
+Ein Fileserver (oder auch Dateiserver) ist ein Server in einem Netz, der Dateien von (internen) Festplatten oder Netzfestplatten für alle zugriffsberechtigten Personen sowie Clients zentral bereitstellt. Die Datenbestände können von den Zugriffsberechtigten genutzt werden, ohne sie z. B. auf Wechseldatenträgern zu transportieren oder per E-Mail zu verteilen. Dadurch, dass die Daten zentral vorgehalten werden, können sie strukturiert und in verschiedenen Verzeichnissen und Dateien bereitgestellt werden. Bei Fileservern können Zugriffsrechte auf die Dateien zentral vergeben werden. Auch die Datensicherung kann vereinfacht werden, wenn sich alle Informationen an einer zentralen Stelle befinden.
+
+Ein Fileserver verwaltet meistens Massenspeicher, die mit ihm über Schnittstellen wie SCSI (Small Computer System Interface) oder SAS (Serial Attached SCSI) verbunden sind. Die Speicher befinden sich entweder direkt im Gehäuse des Fileservers oder sind extern angeschlossen. Letzteres wird oft als Directly Attached Storage (DAS) bezeichnet. Ein Fileserver kann auf herkömmlicher Server-Hardware oder einer dedizierten Appliance betrieben werden. Oft können bei großen Datenmengen auch zentrale Storage-Area-Network (SAN)-Speicher über Host-Bus-Adapter (HBA) im Server und an SAN-Switches angebunden werden.
+
+Zielsetzung
+In diesem Baustein werden wesentliche, für einen Fileserver spezifischen Gefährdungen und die sich daraus ergebenden Anforderungen für einen sicheren Einsatz beschrieben.
+
+Abgrenzung Und Modellierung
+Der Baustein APP.3.3.Fileserver ist auf jeden Fileserver im Informationsverbund einmal anzuwenden.
+
+Der vorliegende Baustein enthält grundsätzliche Anforderungen, die beim Einsatz von Fileservern zu beachten und zu erfüllen sind. Allgemeine und betriebssystemspezifische Aspekte eines Servers sind nicht Gegenstand des vorliegenden Bausteins, sondern werden im Baustein SYS1.1 Allgemeiner Server bzw. in den entsprechenden betriebssystemspezifischen Bausteinen der Schicht SYS IT-Systemebehandelt, z. B. in SYS.1.3 Server unter Linux und Unix oder SYS.1.2.3 Windows Server. Es werden keine Anforderungen an netzbasierte Speichersysteme bzw. Speichernetze beschrieben. Diese sind im Baustein SYS.1.8 Speicherlösungen zu finden. Auch wird nicht auf dedizierte Dienste eingegangen, mit denen ein Fileserver betrieben werden kann, wie z. B. Samba. Der Dienst Samba wird im Baustein APP.3.4 Samba behandelt.
+
+Ein wichtiger Schwerpunkt bei der Absicherung eines Fileservers ist es, Zugriffsrechte auf Dateien nur restriktiv zu vergeben. Weitergehende Anforderungen hierzu sind in dem Baustein ORP.4 Identitäts- und Berechtigungsmanagement zu finden. Auch die Sicherung der auf einem Fileserver abgelegten Informationen wird in diesem Baustein nicht behandelt. Hierzu sind die Anforderungen des Bausteins CON.3 Datensicherungskonzept zu erfüllen.
+Kontrolliertes Einbinden von Dateien und Inhalten
+
+Falls eine Webanwendung oder ein Webservice eine Upload-Funktion für Dateien anbietet, MUSS diese Funktion durch den IT-Betrieb so weit wie möglich eingeschränkt werden. Insbesondere MÜSSEN die erlaubte Dateigröße, erlaubte Dateitypen und erlaubte Speicherorte festgelegt werden. Es MUSS festgelegt werden, welche Clients die Funktion verwenden dürfen. Auch MÜSSEN Zugriffs- und Ausführungsrechte restriktiv gesetzt werden. Zudem MUSS sichergestellt werden, dass Clients Dateien nur im vorgegebenen erlaubten Speicherort speichern können.
+Webbrowser
+
+Einleitung
+Webbrowser sind Anwendungsprogramme, die (Hypertext-) Dokumente, Bilder, Video-, Audio- und andere Datenformate aus dem Internet abrufen, verarbeiten, darstellen, ausgeben und auf lokalen IT-Systemen speichern können. Ebenso können Webbrowser auch Daten ins Internet übertragen.
+
+Stationäre und mobile Clients sind heute ohne Webbrowser nicht vorstellbar, weil sehr viele private und geschäftliche Anwendungen entsprechende Inhalte nutzen. Gleichzeitig werden diese Inhalte im Internet immer vielfältiger. Die meisten Webseiten nutzen eingebettete Videos, animierte Elemente und andere aktive Inhalte. Moderne Webbrowser decken zudem eine große Bandbreite an Zusatzfunktionen ab, indem sie Plug-ins und externe Bibliotheken einbinden. Hinzu kommen Erweiterungen für bestimmte Funktionen, Datenformate und Inhalte. Die Komplexität moderner Webbrowser bietet ein hohes Potenzial für gravierende konzeptionelle Fehler und programmtechnische Schwachstellen. Sie erhöht nicht nur die möglichen Gefahren für Angriffe aus dem Internet, sondern birgt zusätzliche Risiken durch Programmier- und Bedienungsfehler.
+
+Die Risiken für die Vertraulichkeit und Integrität von Daten sind erheblich. Ebenso ist die Verfügbarkeit des gesamten IT-Systems durch solche Schwachstellen bedroht. Internetinhalte müssen demzufolge aus Sicht des Webbrowsers grundsätzlich als nicht vertrauenswürdig angesehen werden.
+
+Zielsetzung
+Ziel dieses Bausteins ist es, Sicherheitsanforderungen für Webbrowser, die auf Clients, also auf stationären und mobilen IT-Systemen sowie auch auf Tablets und Smartphones, eingesetzt werden, zu beschreiben.
+
+Abgrenzung Und Modellierung
+Der Baustein APP.1.2 Webbrowser ist auf jeden Webbrowser einmal anzuwenden.
+
+Er enthält grundsätzliche Sicherheitsanforderungen, die bei der Installation und dem Betrieb von Webbrowsern für den Zugriff auf Daten aus dem Internet zu beachten und zu erfüllen sind.
+
+Webbrowser sind eine der am häufigsten genutzten Anwendungen. Sie greifen auf ungeprüfte, potentiell schädliche Daten im Internet zu und stellen damit ein Einfallstor für Angriffe dar, oft mit dem Ziel, sich weiter auf das Betriebssystem auszubreiten. Um die Betriebssysteme abzusichern, sollten daher die Anforderungen der Bausteine der Schichten SYS.2 Desktop-Systeme und SYS.3.2 Tablet und Smartphone erfüllt werden.
+
+Mit Browsern genutzte Webanwendungen sowie zuständige Server werden in den Bausteinen APP.3.1 Webanwendungen und Webservices und APP.3.2 Webserver behandelt.
+
+Allgemeine Anforderungen an den sicheren Einsatz von Software sind in diesem Baustein nicht enthalten. Sie sind im Baustein APP.6 Allgemeine Software zu finden, der zusätzlich zu diesem Baustein anzuwenden ist.
+Beschaffung von Webanwendungen und Webservices
+
+Zusätzlich zu den allgemeinen Aspekten der Beschaffung von Software SOLLTE die Institution mindestens folgendes bei der Beschaffung von Webanwendungen und Webservices berücksichtigen:
+
+• sichere Eingabevalidierung und Ausgabekodierung,
+
+• sicheres Session-Management,
+
+• sichere kryptografische Verfahren,
+
+• sichere Authentisierungsverfahren,
+
+• sichere Verfahren zum serverseitigen Speichern von Zugangsdaten,
+
+• geeignetes Berechtigungsmanagement,
+
+• ausreichende Protokollierungsmöglichkeiten,
+
+• regelmäßige Sicherheitsupdates durch den Entwickelnden der Software,
+
+• Schutzmechanismen vor verbreiteten Angriffen auf Webanwendungen und Webservices sowie
+
+• Zugriff auf den Quelltext der Webanwendung oder des Webservices.
+Schutz der Webserver-Dateien
+
+Der IT-Betrieb MUSS alle Dateien auf dem Webserver, insbesondere Skripte und Konfigurationsdateien, so schützen, dass sie nicht unbefugt gelesen und geändert werden können.
+
+Es MUSS sichergestellt werden, dass Webanwendungen nur auf einen definierten Verzeichnisbaum zugreifen können (WWW-Wurzelverzeichnis). Der Webserver MUSS so konfiguriert sein, dass er nur Dateien ausliefert, die sich innerhalb des WWW-Wurzelverzeichnisses befinden.
+
+Der IT-Betrieb MUSS alle nicht benötigten Funktionen, die Verzeichnisse auflisten, deaktivieren. Vertrauliche Daten MÜSSEN vor unberechtigtem Zugriff geschützt werden. Insbesondere MUSS der IT-Betrieb sicherstellen, dass vertrauliche Dateien nicht in öffentlichen Verzeichnissen des Webservers liegen. Der IT-Betrieb MUSS regelmäßig überprüfen, ob vertrauliche Dateien in öffentlichen Verzeichnissen gespeichert wurden."

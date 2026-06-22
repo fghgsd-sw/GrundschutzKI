@@ -35,7 +35,7 @@ try:
     from dotenv import load_dotenv
     env_path = NOTEBOOKS_DIR / ".env"
     if env_path.exists():
-        load_dotenv(env_path)
+        load_dotenv(env_path, override=True)
 except ImportError:
     pass
 

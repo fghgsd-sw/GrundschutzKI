@@ -38,7 +38,7 @@ try:
     from dotenv import load_dotenv
     env_path = NOTEBOOKS_DIR / ".env"
     if env_path.exists():
-        load_dotenv(env_path)
+        load_dotenv(env_path, override=True)
 except ImportError:
     pass
 
@@ -48,8 +48,8 @@ if str(NOTEBOOKS_DIR) not in sys.path:
 from litellm_client import LLMConfig
 
 # RAGAS evaluation model - always use gpt-oss-120b for reliable JSON output
-RAGAS_MODEL = "openai/gpt-oss-120b"
-EMBEDDING_MODEL = "openai/octen-embedding-8b"
+RAGAS_MODEL = "openai/openai/gpt-oss-120b"
+EMBEDDING_MODEL = "openai/BAAI/bge-m3"
 
 
 async def _score_row_async(
@@ -194,6 +194,7 @@ async def _run_ragas_chunked(
             header=write_header,
             index=False,
             encoding="utf-8-sig",
+            decimal=".",
         )
         successful = sum(1 for s in chunk_scores if not any(pd.isna(v) for v in s.values()))
         print(

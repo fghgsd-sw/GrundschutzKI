@@ -37,7 +37,7 @@ try:
     from dotenv import load_dotenv
     env_path = NOTEBOOKS_DIR / ".env"
     if env_path.exists():
-        load_dotenv(env_path)
+        load_dotenv(env_path, override=True)
 except ImportError:
     pass
 
@@ -190,6 +190,8 @@ def main() -> None:
                         action="store_false")
     parser.add_argument("--limit", type=int, default=None,
                         help="Process only the first N rows (for testing)")
+    parser.add_argument("--resume", action="store_true", default=False,
+                        help="Skip questions that already have Antwort_v2_production in the output file")
     parser.add_argument("--system-md", default=str(SYSTEM_MD_PATH),
                         help="Path to system.md")
     parser.add_argument("--grundschutz-json", default=str(GRUNDSCHUTZ_JSON_PATH),
@@ -240,49 +242,6 @@ def main() -> None:
         rows = rows[: args.limit]
         print(f"  Processing first {len(rows)} (--limit)")
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    out_rows: list[dict[str, Any]] = []
-    valid_count = 0
-
-    for i, row in enumerate(rows, start=1):
-        frage = row["Frage"]
-        fundstelle = row[fundstellen_col]
-        baustein_ids = extract_baustein_ids(fundstelle)
-        abgrenzungen: list[tuple[str, str, str]] = []
-        if args.include_baustein_1_3 and baustein_ids:
-            abgrenzungen = get_abgrenzungen(baustein_index, baustein_ids)
-
-        messages = build_messages(system_prompt, frage, fundstelle, abgrenzungen)
-
-        print(
-            f"[{i}/{len(rows)}] {frage[:80]}...  "
-            f"(Bausteine={','.join(baustein_ids) or '-'}, Kap1.3={len(abgrenzungen)})"
-        )
-        try:
-            answer = generate_answer(messages, llm_cfg, args.temperature, args.seed)
-        except Exception as e:
-            print(f"  ERROR: {type(e).__name__}: {e}")
-            answer = ""
-
-        is_valid, issues = (False, ["generation_failed"]) if not answer else validate_format(answer)
-        if is_valid:
-            valid_count += 1
-        else:
-            print(f"  format issues: {issues}")
-
-        out_rows.append({
-            **row,
-            "Antwort_v2_production": answer,
-            "Baustein_IDs": ",".join(baustein_ids),
-            "Kap_1_3_count": len(abgrenzungen),
-            "format_valid": "true" if is_valid else "false",
-            "format_issues": "; ".join(issues),
-            "model_used": args.model,
-            "temperature": args.temperature,
-            "seed": args.seed,
-            "timestamp": timestamp,
-        })
-
     fieldnames = list(rows[0].keys()) + [
         "Antwort_v2_production",
         "Baustein_IDs",
@@ -294,18 +253,93 @@ def main() -> None:
         "seed",
         "timestamp",
     ]
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
-        writer.writeheader()
-        writer.writerows(out_rows)
 
+    # Resume support: only skip already-processed questions when --resume is set
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    done_questions: set[str] = set()
+    if args.resume and output_path.exists():
+        with output_path.open("r", encoding="utf-8-sig", newline="") as f:
+            existing = list(csv.DictReader(f, delimiter=";"))
+        done_questions = {r["Frage"] for r in existing if r.get("Antwort_v2_production")}
+        if done_questions:
+            print(f"  Resuming: {len(done_questions)} questions already done, skipping.")
+
+    # Open output file: append if resuming, write fresh header otherwise
+    file_mode = "a" if done_questions else "w"
+    out_file = output_path.open(file_mode, encoding="utf-8-sig", newline="")
+    writer = csv.DictWriter(out_file, fieldnames=fieldnames, delimiter=";")
+    if file_mode == "w":
+        writer.writeheader()
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    out_rows: list[dict[str, Any]] = []
+    valid_count = 0
+    checkpoint_size = 10
+
+    try:
+        for i, row in enumerate(rows, start=1):
+            frage = row["Frage"]
+            if frage in done_questions:
+                continue
+
+            fundstelle = row[fundstellen_col]
+            baustein_ids = extract_baustein_ids(fundstelle)
+            abgrenzungen: list[tuple[str, str, str]] = []
+            if args.include_baustein_1_3 and baustein_ids:
+                abgrenzungen = get_abgrenzungen(baustein_index, baustein_ids)
+
+            messages = build_messages(system_prompt, frage, fundstelle, abgrenzungen)
+
+            print(
+                f"[{i}/{len(rows)}] {frage[:80]}...  "
+                f"(Bausteine={','.join(baustein_ids) or '-'}, Kap1.3={len(abgrenzungen)})"
+            )
+            try:
+                answer = generate_answer(messages, llm_cfg, args.temperature, args.seed)
+            except Exception as e:
+                print(f"  ERROR: {type(e).__name__}: {e}")
+                answer = ""
+
+            is_valid, issues = (False, ["generation_failed"]) if not answer else validate_format(answer)
+            if is_valid:
+                valid_count += 1
+            else:
+                print(f"  format issues: {issues}")
+
+            out_rows.append({
+                **row,
+                "Antwort_v2_production": answer,
+                "Baustein_IDs": ",".join(baustein_ids),
+                "Kap_1_3_count": len(abgrenzungen),
+                "format_valid": "true" if is_valid else "false",
+                "format_issues": "; ".join(issues),
+                "model_used": args.model,
+                "temperature": args.temperature,
+                "seed": args.seed,
+                "timestamp": timestamp,
+            })
+
+            if len(out_rows) % checkpoint_size == 0:
+                writer.writerows(out_rows[-checkpoint_size:])
+                out_file.flush()
+                print(f"  [checkpoint] {len(out_rows)} rows written to {output_path.name}")
+
+        # Write any remaining rows not yet flushed
+        remainder = len(out_rows) % checkpoint_size
+        if remainder:
+            writer.writerows(out_rows[-remainder:])
+            out_file.flush()
+
+    finally:
+        out_file.close()
+
+    total_written = len(out_rows)
     print()
     print("=" * 60)
     print(f"Wrote: {output_path}")
-    print(f"  Rows: {len(out_rows)}")
-    print(f"  Format-valid: {valid_count}/{len(out_rows)}")
-    print(f"  Manual review needed: {len(out_rows) - valid_count}")
+    print(f"  Rows (this run): {total_written}")
+    print(f"  Format-valid: {valid_count}/{total_written}")
+    print(f"  Manual review needed: {total_written - valid_count}")
     print("=" * 60)
 
 
