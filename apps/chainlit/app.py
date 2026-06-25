@@ -2997,7 +2997,23 @@ async def main(message: cl.Message):
             cl.user_session.set("upload_context_parts", upload_context_parts)
             cl.user_session.set("upload_pdfs", upload_pdfs)
             await cl.Message(
-                content=f"**{', '.join(new_files)}** als Kontext für diese Sitzung hinzugefügt."
+                content=(
+                    f"**{', '.join(new_files)}** als Kontext für diese Sitzung hinzugefügt.\n\n"
+                    "**Hinweis: Diese Funktion befindet sich in der Evaluationsphase.**\n\n"
+                    "- Hochgeladene Dokumente werden vollständig als Text in den Chat-Kontext geladen "
+                    "und nicht über die Wissensdatenbank durchsucht. In den Antworten wird auf die "
+                    "IT-Grundschutz-Dokumente verwiesen, NICHT auf Stellen in den hochgeladenen "
+                    "Dokumenten.\n\n"
+                    "- Mögliche Anwendungsfälle:\n"
+                    "    - Datensicherungskonzept in Verbindung mit der Frage: \"Berücksichtigt dieser "
+                    "Entwurf eines Datensicherungskonzeptes alle Anforderungen und Empfehlungen des "
+                    "IT-Grundschutzes?\"\n"
+                    "    - Liste aller Kern- und Unterstützungsprozesse in Verbindung mit der Frage: "
+                    "\"Welche Bausteine muss ich für den sicheren Betrieb meiner Kernprozesse "
+                    "berücksichtigen?\"\n"
+                    "    - ...\n\n"
+                    "Feedback zur Funktion und zu möglichen weiteren Anwendungsfällen ist willkommen."
+                )
             ).send()
 
     messages = cl.user_session.get("messages") or []
