@@ -70,7 +70,7 @@ und verwendet `COALESCE(child.output, s.output)` als Fallback.
 
 ### CSV-Export über Browser
 
-```
+```url
 http://localhost:8000/export/feedback
 ```
 

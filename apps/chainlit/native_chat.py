@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS "User" (
   identifier TEXT UNIQUE NOT NULL,
   email TEXT UNIQUE,
   password_hash TEXT,
+  email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  verification_token TEXT,
   metadata TEXT NOT NULL DEFAULT '{}',
   "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
   "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
@@ -35,6 +37,12 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'User' AND column_name = 'password_hash') THEN
     ALTER TABLE "User" ADD COLUMN password_hash TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'User' AND column_name = 'email_verified') THEN
+    ALTER TABLE "User" ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'User' AND column_name = 'verification_token') THEN
+    ALTER TABLE "User" ADD COLUMN verification_token TEXT;
   END IF;
 END $$;
 
@@ -98,6 +106,22 @@ CREATE INDEX IF NOT EXISTS idx_step_thread_start
   ON "Step"("threadId", "startTime");
 CREATE INDEX IF NOT EXISTS idx_element_thread
   ON "Element"("threadId");
+-- Dedupliziere Feedback.stepId (nur neueste Zeile bleibt)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables WHERE table_name = 'Feedback'
+    ) THEN
+        DELETE FROM "Feedback"
+        WHERE id NOT IN (
+            SELECT max(id) FROM "Feedback" GROUP BY "stepId"
+        );
+    END IF;
+END $$;
+
+-- Einzigartigkeits-Index für stepId
+CREATE UNIQUE INDEX IF NOT EXISTS "Feedback_stepId_unique"
+ON "Feedback" ("stepId");
 """
 
 
@@ -114,25 +138,33 @@ async def create_user(
     username: str,
     email: str,
     password_hash: str,
+    *,
+    email_verified: bool = False,
+    verification_token: str | None = None,
 ) -> dict[str, Any] | None:
     """Create a new user with hashed password. Returns user dict or None if exists."""
     conn = await asyncpg.connect(database_url)
     try:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO "User" (identifier, email, password_hash, metadata)
-            VALUES ($1, $2, $3, '{"provider": "local"}')
-            ON CONFLICT (identifier) DO NOTHING
-            ON CONFLICT (email) DO NOTHING
-            RETURNING id, identifier, email, metadata, "createdAt"
-            """,
-            username,
-            email,
-            password_hash,
-        )
-        if row is None:
+        try:
+            row = await conn.fetchrow(
+                '''
+                INSERT INTO "User" (identifier, email, password_hash, email_verified, verification_token, metadata)
+                VALUES ($1, $2, $3, $4, $5, '{"provider": "local"}')
+                ON CONFLICT ON CONSTRAINT "User_identifier_key" DO NOTHING
+                ON CONFLICT ON CONSTRAINT "User_email_key" DO NOTHING
+                RETURNING id, identifier, email, email_verified, metadata, "createdAt"
+                ''',
+                username,
+                email,
+                password_hash,
+                email_verified,
+                verification_token,
+            )
+            if row is None:
+                return None
+            return dict(row)
+        except asyncpg.UniqueViolationError:
             return None
-        return dict(row)
     finally:
         await conn.close()
 
@@ -146,11 +178,32 @@ async def get_user_by_identifier(
     try:
         row = await conn.fetchrow(
             """
-            SELECT id, identifier, email, password_hash, metadata, "createdAt"
+            SELECT id, identifier, email, password_hash, email_verified, metadata, "createdAt"
             FROM "User"
             WHERE identifier = $1
             """,
             identifier,
+        )
+        return dict(row) if row else None
+    finally:
+        await conn.close()
+
+
+async def verify_user_email(
+    database_url: str,
+    token: str,
+) -> dict[str, Any] | None:
+    """Verify a user's email by token. Returns user dict or None if token invalid."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        row = await conn.fetchrow(
+            """
+            UPDATE "User"
+            SET email_verified = TRUE, verification_token = NULL, "updatedAt" = NOW()
+            WHERE verification_token = $1 AND email_verified = FALSE
+            RETURNING id, identifier, email
+            """,
+            token,
         )
         return dict(row) if row else None
     finally:
@@ -389,33 +442,33 @@ async def export_feedback_csv(
         rows = await conn.fetch(
             """
             SELECT
-              u.identifier                  AS username,
-              user_q.output                 AS user_question,
-              COALESCE(child.output, s.output) AS assistant_answer,
-              f.value                       AS feedback_value,
-              f.comment                     AS feedback_comment,
-              s."createdAt"                 AS answer_time,
-              t.id                          AS thread_id,
-              f.id                          AS feedback_id,
-              f."stepId"                    AS step_id
+                u.identifier AS username,
+                COALESCE(user_q.output, user_q.input) AS user_question,
+                COALESCE(child.output, child.input, s.output, s.input) AS assistant_answer,
+                f.value AS feedback_value,
+                f.comment AS feedback_comment,
+                s."createdAt" AS answer_time,
+                t.id AS thread_id,
+                f.id AS feedback_id,
+                f."stepId" AS step_id
             FROM "Feedback" f
-            JOIN "Step" s   ON s.id = f."stepId"
+            JOIN "Step" s ON s.id = f."stepId"
             JOIN "Thread" t ON t.id = s."threadId"
             LEFT JOIN "User" u ON u.id = t."userId"
             LEFT JOIN LATERAL (
-                SELECT cs.output
+                SELECT cs.output, cs.input
                 FROM "Step" cs
                 WHERE cs."parentId" = s.id
-                  AND cs.type = 'assistant_message'
+                    AND cs.type = 'assistant_message'
                 ORDER BY cs."startTime" DESC
                 LIMIT 1
             ) child ON true
             LEFT JOIN LATERAL (
-                SELECT qs.output
+                SELECT qs.output, qs.input
                 FROM "Step" qs
                 WHERE qs."threadId" = s."threadId"
-                  AND qs.type = 'user_message'
-                  AND qs."startTime" < s."startTime"
+                    AND qs.type = 'user_message'
+                    AND qs."startTime" < s."startTime"
                 ORDER BY qs."startTime" DESC
                 LIMIT 1
             ) user_q ON true
@@ -455,3 +508,12 @@ async def export_feedback_csv(
         await conn.close()
 
     return csv_path
+
+
+async def delete_user_by_email(database_url: str, email: str) -> None:
+    """Löscht einen Nutzer anhand der E-Mail-Adresse."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        await conn.execute('DELETE FROM "User" WHERE email = $1', email)
+    finally:
+        await conn.close()
