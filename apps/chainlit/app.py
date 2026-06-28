@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import json
@@ -7,6 +8,7 @@ import os
 import random
 import re
 import secrets
+import shutil
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -109,10 +111,20 @@ async def _send_verification_email(to_email: str, username: str, token: str) -> 
     msg["To"] = to_email
     msg.set_content(
         f"Hallo {username},\n\n"
-        f"bitte bestätige deine E-Mail-Adresse, indem du folgenden Link öffnest:\n\n"
+        f"um die Registrierung abzuschließen, öffnen Sie bitte den unten stehenden Link.\n\n"
+        f"Hinweise zum Datenschutz:\n\n"
+        f"Sie stimmen mit Ihrer Registrierung der Teilnahme an einer Evaluierung der "
+        f"Anwendung Grundschutz-KI zu. Im Evaluierungszeitraum vom 01. bis 22.07.2026 "
+        f"werden nur solche Daten ausgewertet, die Sie aktiv als Feedback (thumbs up/down "
+        f"+ Kommentar) geben. Die Auswertung erfolgt anonymisiert. Chatverläufe werden in "
+        f"der Anwendung gespeichert und für die Benutzerspezifische Beantwortung verwendet. "
+        f"Sie können Chatverläufe jederzeit selbständig löschen. Nach Abschluss der "
+        f"Evaluierungsphase wird das System zurückgesetzt und alle Benutzerbezogenen Daten "
+        f"werden gelöscht.\n\n\n"
         f"{verify_url}\n\n"
-        f"Falls du dich nicht registriert hast, ignoriere diese E-Mail.\n\n"
-        f"Viele Grüße\nGrundschutzKI"
+        f"Falls Sie sich nicht mit dieser E-Mail-Adresse registriert haben, ignorieren Sie "
+        f"diese E-Mail oder melden Sie dies an dsb@fghgsd.de.\n\n"
+        f"Viele Grüße\nGrundschutz-KI"
     )
     await aiosmtplib.send(
         msg,
@@ -236,6 +248,17 @@ def _cache_citation_panel_content(step_id: str, panel_content: str, *, max_items
 
 
 def _ensure_route_precedes_catch_all(fastapi_app: Any, route_path: str) -> None:
+    """Move our route before Chainlit's own mounted router.
+
+    Chainlit's frontend/auth routes (including its catch-all SPA handler) are
+    not registered as a plain APIRoute matching "/{full_path:path}" — they are
+    included as a single opaque "_IncludedRouter" entry. Starlette evaluates
+    routes in list order, so anything registered after that entry (which is
+    where FastAPI puts routes added via decorators at startup) never gets a
+    chance to match if Chainlit's router claims the path first. The original
+    heuristic only looked for a "/{full_path:path}" suffix, which never
+    matches this "_IncludedRouter" entry, so the reorder silently never ran.
+    """
     routes = getattr(getattr(fastapi_app, "router", None), "routes", None)
     if not isinstance(routes, list):
         return
@@ -245,8 +268,11 @@ def _ensure_route_precedes_catch_all(fastapi_app: Any, route_path: str) -> None:
         (
             i
             for i, route in enumerate(routes)
-            if isinstance(getattr(route, "path", None), str)
-            and str(getattr(route, "path")).endswith("/{full_path:path}")
+            if type(route).__name__ == "_IncludedRouter"
+            or (
+                isinstance(getattr(route, "path", None), str)
+                and str(getattr(route, "path")).endswith("/{full_path:path}")
+            )
         ),
         None,
     )
@@ -2184,6 +2210,11 @@ async def on_app_startup() -> None:
 
     init_chat_db(CHAT_DB_PATH)
     CHAT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    asyncio.create_task(_stale_upload_cleanup_loop())
+    print(
+        "[STARTUP] stale upload cleanup loop started "
+        f"(max_age={_STALE_UPLOAD_MAX_AGE_HOURS}h, interval={_STALE_UPLOAD_SWEEP_INTERVAL_SECONDS}s)"
+    )
 
     if not DATABASE_URL:
         return
@@ -2261,6 +2292,11 @@ async def on_app_startup() -> None:
             raise HTTPException(status_code=400, detail="Ungültige E-Mail-Adresse")
         if not password or len(password) < 8:
             raise HTTPException(status_code=400, detail="Passwort muss mindestens 8 Zeichen haben")
+        if len(password) > 64:
+            # 64 chars comfortably covers browser/password-manager generated
+            # passwords and stays well under bcrypt's 72-byte hash input cap
+            # even with multi-byte (e.g. umlaut/emoji) characters.
+            raise HTTPException(status_code=400, detail="Passwort darf höchstens 64 Zeichen haben")
 
         # Check if user/email already exists
         exists = await check_user_exists(DATABASE_URL, username, email)
@@ -2324,9 +2360,12 @@ async def on_app_startup() -> None:
 
     @chainlit_fastapi_app.get("/auth/verify")
     async def verify_email(token: str = fastapi.Query(...)):
+        print(f"[DEBUG] /auth/verify called, token={token!r}")
         if not token or len(token) < 10:
+            print("[DEBUG] /auth/verify rejected: token missing or too short")
             raise HTTPException(status_code=400, detail="Ungültiger Token")
         result = await verify_user_email(DATABASE_URL, token)
+        print(f"[DEBUG] /auth/verify result={result!r}")
         if result is None:
             return fastapi.responses.HTMLResponse(
                 content="<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
@@ -2388,6 +2427,10 @@ async def on_app_startup() -> None:
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/register")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/verify")
 
+    print("[DEBUG] full route list after reordering:")
+    for i, r in enumerate(chainlit_fastapi_app.router.routes):
+        print(f"  [{i}] path={getattr(r, 'path', None)!r} type={type(r).__name__}")
+
     chainlit_fastapi_app.state.native_export_route_added = True
     print("[STARTUP] native export route registered at /export/all-chats")
     print("[STARTUP] feedback export route registered at /export/feedback")
@@ -2412,6 +2455,7 @@ async def on_feedback(feedback: cl.types.Feedback):
 @cl.on_chat_end
 async def on_chat_end():
     """Delete uploaded files when the session ends."""
+    _ACTIVE_UPLOAD_SESSION_IDS.discard(cl.context.session.thread_id)
     upload_pdfs: dict[str, str] = cl.user_session.get("upload_pdfs") or {}
     for file_name, sid in upload_pdfs.items():
         path = _resolve_upload_pdf_path(sid, file_name)
@@ -2423,6 +2467,52 @@ async def on_chat_end():
                     parent.rmdir()
             except Exception as exc:
                 print(f"[WARN] upload cleanup failed for {file_name}: {exc}")
+
+
+_STALE_UPLOAD_MAX_AGE_HOURS = 24
+_STALE_UPLOAD_SWEEP_INTERVAL_SECONDS = 3600
+
+# Session IDs with an open chat connection right now (populated in on_chat_start,
+# removed in on_chat_end). The stale-upload sweep must never delete a directory
+# belonging to one of these, regardless of its file mtime — a long-running chat
+# that uploaded a document early and kept chatting without re-uploading would
+# otherwise lose its PDF sidebar preview mid-session.
+_ACTIVE_UPLOAD_SESSION_IDS: set[str] = set()
+
+
+def _cleanup_stale_upload_dirs(max_age_hours: float = _STALE_UPLOAD_MAX_AGE_HOURS) -> None:
+    """Remove session upload directories that on_chat_end failed to clean up.
+
+    Safety net for abrupt disconnects (browser crash, network drop) where the
+    normal on_chat_end handler never runs. Each session gets its own
+    subdirectory under UPLOAD_SERVE_DIR, so age is judged by the
+    subdirectory's mtime, not individual files. Directories belonging to a
+    currently active session (see _ACTIVE_UPLOAD_SESSION_IDS) are always
+    skipped, no matter how old their mtime is.
+    """
+    if not UPLOAD_SERVE_DIR.exists():
+        return
+    cutoff = datetime.now(timezone.utc).timestamp() - max_age_hours * 3600
+    for session_dir in UPLOAD_SERVE_DIR.iterdir():
+        if not session_dir.is_dir():
+            continue
+        if session_dir.name in _ACTIVE_UPLOAD_SESSION_IDS:
+            continue
+        try:
+            if session_dir.stat().st_mtime < cutoff:
+                shutil.rmtree(session_dir)
+                print(f"[INFO] removed stale upload dir: {session_dir.name}")
+        except Exception as exc:
+            print(f"[WARN] stale upload cleanup failed for {session_dir.name}: {exc}")
+
+
+async def _stale_upload_cleanup_loop() -> None:
+    while True:
+        try:
+            _cleanup_stale_upload_dirs()
+        except Exception as exc:
+            print(f"[WARN] stale upload cleanup loop error: {exc}")
+        await asyncio.sleep(_STALE_UPLOAD_SWEEP_INTERVAL_SECONDS)
 
 
 @cl.on_feedback
@@ -2671,13 +2761,6 @@ def _build_chat_settings(
         personalization_on = user_profile.personalization_enabled
         active_kw_values = user_profile.active_keyword_values()
 
-    # Determine current prompt text for the editor
-    current_prompt = ""
-    if user_profile and user_profile.custom_prompt:
-        current_prompt = user_profile.custom_prompt
-    elif SYSTEM_PROMPT:
-        current_prompt = SYSTEM_PROMPT
-
     widgets: list = [
         Select(
             id="chat_profile",
@@ -2695,7 +2778,7 @@ def _build_chat_settings(
         Tags(
             id="active_keywords",
             label="Schlüsselwörter",
-            description="Themen aus Ihrem Chatverlauf. Entfernen oder hinzufügen.",
+            description="Schlüsselwörter hinzufügen (Press Enter)",
             initial=active_kw_values,
         ),
         Select(
@@ -2704,14 +2787,6 @@ def _build_chat_settings(
             description="Schlüsselwörter aus dem Chatverlauf neu extrahieren",
             values=["- Keine Aktion -", "Jetzt neu generieren"],
             initial_index=0,
-        ),
-        TextInput(
-            id="system_prompt",
-            label="System-Prompt (bearbeitbar)",
-            description="Bearbeiten Sie den Basis-Prompt. Leer lassen = Standard-Prompt verwenden.",
-            initial=current_prompt,
-            placeholder="System-Prompt hier eingeben …",
-            multiline=True,
         ),
     ]
 
@@ -2730,7 +2805,7 @@ def _build_chat_settings(
         widgets.append(
             TextInput(
                 id="_readonly_context",
-                label="Automatisch ergänzt (nicht bearbeitbar)",
+                label="Rollenkontext",
                 description="Wird dem Prompt je nach Rolle und Personalisierung hinzugefügt.",
                 initial=role_context,
                 multiline=True,
@@ -2839,28 +2914,6 @@ async def on_settings_update(settings: dict[str, Any]):
             print(f"[ERROR] regenerate_keywords in settings: {exc}")
             changed_parts.append(f"Fehler beim Generieren: {exc}")
 
-    # --- Handle system prompt editing ---
-    if "system_prompt" in settings:
-        new_prompt_text = (settings.get("system_prompt") or "").strip()
-        if user_profile is None:
-            user_profile = UserProfile(user_id=user_id or "anonymous")
-
-        if not new_prompt_text or new_prompt_text == (SYSTEM_PROMPT or "").strip():
-            # Empty or identical to default → reset to default
-            user_profile.custom_prompt = None
-            if user_id:
-                upsert_user_profile(CHAT_DB_PATH, user_id, custom_prompt=None)
-            if user_profile.custom_prompt is not None or new_prompt_text == "":
-                changed_parts.append("System-Prompt → **Standard**")
-        else:
-            old_custom = user_profile.custom_prompt
-            if new_prompt_text != (old_custom or "").strip():
-                user_profile.custom_prompt = new_prompt_text
-                if user_id:
-                    upsert_user_profile(CHAT_DB_PATH, user_id, custom_prompt=new_prompt_text)
-                changed_parts.append("System-Prompt → **benutzerdefiniert**")
-        cl.user_session.set("user_profile", user_profile)
-
     # Rebuild system prompt with all changes
     _rebuild_system_prompt_in_session()
 
@@ -2883,6 +2936,7 @@ async def on_settings_update(settings: dict[str, Any]):
 
 @cl.on_chat_start
 async def on_chat_start():
+    _ACTIVE_UPLOAD_SESSION_IDS.add(cl.context.session.thread_id)
     existing_session_id = cl.user_session.get("chat_history_session_id")
     resume_session_id = existing_session_id if isinstance(existing_session_id, str) and existing_session_id.strip() else None
     # Use Chainlit's own thread_id (set by the websocket session before on_chat_start
@@ -3112,7 +3166,6 @@ async def main(message: cl.Message):
 
     # Process any uploaded files as session context (full text, not RAG)
     if message.elements:
-        import shutil
         upload_context_parts: list[str] = cl.user_session.get("upload_context_parts") or []
         upload_pdfs: dict[str, str] = cl.user_session.get("upload_pdfs") or {}
         session_id_for_upload = cl.context.session.thread_id
@@ -3151,16 +3204,15 @@ async def main(message: cl.Message):
             await cl.Message(
                 content=(
                     f"**{', '.join(new_files)}** als Kontext für diese Sitzung hinzugefügt.\n\n"
-                    "**Hinweis: Diese Funktion befindet sich in der Evaluationsphase.**\n\n"
-                    "- Hochgeladene Dokumente werden vollständig als Text in den Chat-Kontext geladen "
-                    "und nicht über die Wissensdatenbank durchsucht. In den Antworten wird auf die "
-                    "IT-Grundschutz-Dokumente verwiesen, NICHT auf Stellen in den hochgeladenen "
-                    "Dokumenten.\n\n"
+                    "**Hinweis:** Diese Funktion befindet sich in der Evaluationsphase.\n\n"
+                    "- Hochgeladene Dokumente werden vollständig als Text in den Chat-Kontext geladen. "
+                    "In den Antworten wird auf die IT-Grundschutz-Dokumente verwiesen, NICHT auf"
+                    " Stellen in den hochgeladenen Dokumenten.\n\n"
                     "- Mögliche Anwendungsfälle:\n"
-                    "    - Datensicherungskonzept in Verbindung mit der Frage: \"Berücksichtigt dieser "
+                    "    - **Entwurf Datensicherungskonzept** mit der Frage: \"Berücksichtigt dieser "
                     "Entwurf eines Datensicherungskonzeptes alle Anforderungen und Empfehlungen des "
                     "IT-Grundschutzes?\"\n"
-                    "    - Liste aller Kern- und Unterstützungsprozesse in Verbindung mit der Frage: "
+                    "    - **Liste der Kern- und Unterstützungsprozesse** mit der Frage: "
                     "\"Welche Bausteine muss ich für den sicheren Betrieb meiner Kernprozesse "
                     "berücksichtigen?\"\n"
                     "    - ...\n\n"
@@ -3181,8 +3233,11 @@ async def main(message: cl.Message):
     add_chat_message(CHAT_DB_PATH, session_id, "user", message.content)
     set_session_title_if_missing(CHAT_DB_PATH, session_id, _first_sentence(message.content, max_len=96))
 
-    # Build upload context injection — prepended to every API call but NOT stored in history
-    _UPLOAD_CONTEXT_MAX_CHARS = 30000
+    # Build upload context injection — prepended to every API call but NOT stored in history.
+    # 100k chars (~25k tokens) uses a meaningful share of the 128k-token context window
+    # (gpt-oss-120b / Llama 3.3 70B) while leaving headroom for system prompt, RAG chunks,
+    # conversation history, and the model's own output.
+    _UPLOAD_CONTEXT_MAX_CHARS = 100000
     upload_context_parts: list[str] = cl.user_session.get("upload_context_parts") or []
     if upload_context_parts:
         context_block = "\n\n".join(upload_context_parts)

@@ -1,3 +1,15 @@
+/* ── Double the height of the read-only "Rollenkontext" field ────── */
+textarea#_readonly_context {
+  min-height: 160px !important;
+  height: 160px !important;
+}
+
+/* ── Scale logo to ~150% of its native 200x46 size (300x69) ──────── */
+img.logo {
+  width: 300px !important;
+  height: 69px !important;
+}
+
 /* Make action buttons roomier and allow long follow-up questions to remain readable. */
 [data-testid="message-actions"],
 [data-testid="actions"],

@@ -113,8 +113,8 @@ BEGIN
         SELECT 1 FROM information_schema.tables WHERE table_name = 'Feedback'
     ) THEN
         DELETE FROM "Feedback"
-        WHERE id NOT IN (
-            SELECT max(id) FROM "Feedback" GROUP BY "stepId"
+        WHERE id::text NOT IN (
+            SELECT max(id::text) FROM "Feedback" GROUP BY "stepId"
         );
     END IF;
 END $$;
@@ -150,8 +150,7 @@ async def create_user(
                 '''
                 INSERT INTO "User" (identifier, email, password_hash, email_verified, verification_token, metadata)
                 VALUES ($1, $2, $3, $4, $5, '{"provider": "local"}')
-                ON CONFLICT ON CONSTRAINT "User_identifier_key" DO NOTHING
-                ON CONFLICT ON CONSTRAINT "User_email_key" DO NOTHING
+                ON CONFLICT DO NOTHING
                 RETURNING id, identifier, email, email_verified, metadata, "createdAt"
                 ''',
                 username,
@@ -173,14 +172,20 @@ async def get_user_by_identifier(
     database_url: str,
     identifier: str,
 ) -> dict[str, Any] | None:
-    """Get user by username/identifier."""
+    """Get user by username OR email.
+
+    Chainlit's built-in login form is hardcoded to label this field "Email
+    address", which conflicts with registration asking for a separate
+    username. Matching on both columns means login works no matter which
+    one the user types, removing the ambiguity at its source.
+    """
     conn = await asyncpg.connect(database_url)
     try:
         row = await conn.fetchrow(
             """
             SELECT id, identifier, email, password_hash, email_verified, metadata, "createdAt"
             FROM "User"
-            WHERE identifier = $1
+            WHERE identifier = $1 OR email = $1
             """,
             identifier,
         )
@@ -205,6 +210,7 @@ async def verify_user_email(
             """,
             token,
         )
+        print(f"[DEBUG] verify_user_email: token={token!r} matched_row={dict(row) if row else None}")
         return dict(row) if row else None
     finally:
         await conn.close()

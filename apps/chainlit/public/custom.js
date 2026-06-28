@@ -1,51 +1,35 @@
+/* ── Clarify login field: backend accepts username OR email, but Chainlit's
+   built-in login form hardcodes the label "Email address" and type="email"
+   (which triggers native browser validation rejecting a plain username
+   without "@"). Relabel and loosen validation so either works. ─────── */
 (function () {
-  const HINT_ID = "export-all-welcome-hint";
+  var MARK_ATTR = "data-gski-login-fixed";
 
-  function isVisible(el) {
-    if (!el) return false;
-    const style = window.getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden";
-  }
+  function fixLoginField() {
+    var input = document.querySelector('input#email, input[type="email"]');
+    if (!input || input.getAttribute(MARK_ATTR)) return;
+    // Skip our own registration panel, which has no such field.
+    if (input.closest("#gski-register-panel")) return;
 
-  function findComposerAnchor() {
-    const input =
-      document.querySelector("textarea") ||
-      document.querySelector('input[type="text"]');
-    if (!input || !isVisible(input)) return null;
+    input.setAttribute(MARK_ATTR, "1");
+    input.type = "text";
+    input.placeholder = "Benutzername oder E-Mail-Adresse";
 
-    const form = input.closest("form");
-    if (form && form.parentNode) return form;
-    return input.parentElement;
-  }
-
-  function ensureHint() {
-    const anchor = findComposerAnchor();
-    if (!anchor || !anchor.parentNode) return;
-
-    let hint = document.getElementById(HINT_ID);
-    if (!hint) {
-      hint = document.createElement("div");
-      hint.id = HINT_ID;
-      hint.style.margin = "0.55rem 0 0 0";
-      hint.style.fontSize = "0.9rem";
-      hint.style.lineHeight = "1.35";
-      hint.style.color = "inherit";
-      hint.style.opacity = "0.9";
-      hint.innerHTML = 'Nutze "<code>/export all</code>" um alle Chats zu exportieren.';
+    var label = input.id ? document.querySelector('label[for="' + input.id + '"]') : null;
+    if (!label) {
+      var form = input.closest("form");
+      label = form ? form.querySelector("label") : null;
     }
-
-    if (anchor.nextSibling !== hint) {
-      anchor.parentNode.insertBefore(hint, anchor.nextSibling);
-    }
+    if (label) label.textContent = "Benutzername oder E-Mail-Adresse";
   }
 
-  const observer = new MutationObserver(function () {
-    ensureHint();
+  var observer = new MutationObserver(function () {
+    fixLoginField();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  window.addEventListener("load", ensureHint);
-  ensureHint();
+  window.addEventListener("load", fixLoginField);
+  fixLoginField();
 })();
 
 /* ── Force line break before follow-up question buttons ─────── */
@@ -254,6 +238,7 @@
       if (user.length < 3)                     return showMsg("Benutzername muss mind. 3 Zeichen haben.", false);
       if (!email || email.indexOf("@") === -1) return showMsg("Bitte gültige E-Mail eingeben.", false);
       if (pw.length < 8)                       return showMsg("Passwort muss mind. 8 Zeichen haben.", false);
+      if (pw.length > 64)                       return showMsg("Passwort darf höchstens 64 Zeichen haben.", false);
       if (pw !== pw2)                          return showMsg("Passwörter stimmen nicht überein.", false);
 
       submitBtn.disabled = true;
