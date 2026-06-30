@@ -1,3 +1,11 @@
+/* ── Smaller per-source headings in the citation side panel ──────── */
+#side-view-content h2 {
+  font-size: 1.05rem !important;
+}
+#side-view-content h3 {
+  font-size: 0.95rem !important;
+}
+
 /* ── Double the height of the read-only "Rollenkontext" field ────── */
 textarea#_readonly_context {
   min-height: 160px !important;

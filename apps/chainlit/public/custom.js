@@ -236,6 +236,7 @@
       }
 
       if (user.length < 3)                     return showMsg("Benutzername muss mind. 3 Zeichen haben.", false);
+      if (!/^[A-Za-z0-9_.-]{3,32}$/.test(user)) return showMsg("Benutzername darf nur Buchstaben, Ziffern, Punkt, Bindestrich und Unterstrich enthalten.", false);
       if (!email || email.indexOf("@") === -1) return showMsg("Bitte gültige E-Mail eingeben.", false);
       if (pw.length < 8)                       return showMsg("Passwort muss mind. 8 Zeichen haben.", false);
       if (pw.length > 64)                       return showMsg("Passwort darf höchstens 64 Zeichen haben.", false);

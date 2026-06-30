@@ -10,15 +10,30 @@ Sie stimmen mit Ihrer Registrierung der Teilnahme an einer Evaluierung der Anwen
 
 Chatverläufe werden in der Anwendung gespeichert und für die benutzerspezifische Beantwortung verwendet. Sie können Chatverläufe jederzeit selbständig löschen. Nach Abschluss der Evaluierungsphase wird das System zurückgesetzt und alle benutzerbezogenen Daten werden gelöscht.
 
+Im **Feedback-Formular** angegebene Daten (rollenbezogene Gesamteinschätzung, allgemeine Anmerkungen) werden ebenfalls gespeichert und im Rahmen der Evaluierung anonymisiert ausgewertet.
+
+Im Chat **hochgeladene Dateien** werden nicht dauerhaft gespeichert, sondern nach Ende der jeweiligen Sitzung automatisch gelöscht.
+
 ---
 
 ## Hinweise zur Anwendung
+
+### Bekannte Einschränkungen
+
+Grundschutz-KI befindet sich in der Evaluierungsphase. Folgende Punkte sind uns bekannt und bewusst Gegenstand der Evaluierung — Ihr Feedback dazu ist besonders wertvoll:
+
+- **Quellenangaben:** Liegen mehrere Anforderungen eines Bausteins eng beieinander (z. B. auf derselben Seite), kann die angegebene Fundstelle in Einzelfällen nicht exakt zur jeweiligen Aussage passen, auch wenn der inhaltliche Kern stimmt. Bei Unsicherheit lohnt ein Blick auf die verlinkte PDF-Seite.
+- **Suchtreffer:** Die Suche nach passenden Stellen im Kompendium erfolgt über eine semantische Ähnlichkeitssuche. Bei sehr spezifischen Fachbegriffen kann es vorkommen, dass die treffendste Stelle nicht gefunden wird und die Antwort dadurch ungenauer ausfällt.
+- **Sehr breite Aufzählungsfragen** (z. B. „Welche Anforderungen stellt Baustein X insgesamt?"): Bei Fragen, die viele Einzelanforderungen eines Bausteins gleichzeitig abdecken sollen, kann es vorkommen, dass eine Anforderungs-Bezeichnung nicht exakt zum tatsächlichen Inhalt passt. Konkretere Teilfragen (z. B. zu einem einzelnen Aspekt) liefern erfahrungsgemäß zuverlässigere Ergebnisse als eine vollständige Auflistung in einer Antwort.
+
+Diese Fälle lassen sich gut über 👎 mit kurzem Kommentar oder das Feedback-Formular melden.
 
 ### Grundfunktionen
 
 - **Frage stellen** — Text in das Eingabefeld unten schreiben und mit Enter oder dem Senden-Button abschicken.
 - **Prompt bearbeiten** — eigene, bereits gesendete Fragen lassen sich nachträglich anpassen (Bearbeiten-Symbol an der eigenen Nachricht); die Antwort wird daraufhin neu generiert.
 - **Folgefrage klicken** — am Ende jeder Antwort werden passende Anschlussfragen vorgeschlagen; ein Klick darauf stellt die Frage direkt.
+- **Anschlussfragen neu generieren** — über die Schaltfläche „Anschlussfragen neu vorschlagen" unter einer Antwort lassen sich alternative Folgefragen erzeugen, falls die vorgeschlagenen nicht passen.
 - **Neuer Chat** — über „Neuer Chat" in der linken Seitenleiste wird eine frische Sitzung ohne bisherigen Verlauf gestartet.
 - **Chat-Verlauf löschen** — einzelne Unterhaltungen lassen sich über das Kontextmenü in der linken Seitenleiste löschen.
 
@@ -26,9 +41,8 @@ Chatverläufe werden in der Anwendung gespeichert und für die benutzerspezifisc
 
 Jede Antwort kann über **👍 Daumen hoch** oder **👎 Daumen runter** bewertet werden. Dabei ist die Eingabe einer **Bemerkung obligatorisch**.
 
-- Die Bemerkung kann sich auf den **konkreten Inhalt der bewerteten Antwort** beziehen
-- Es sind aber auch **allgemeine Anmerkungen zur Funktionalität** der Anwendung möglich (z. B. zur Bedienung, zu Personalisierung oder Datei-Upload)
-- **Wichtig:** Übergreifende, nicht auf eine einzelne Antwort bezogene Anmerkungen können **nur auf diesem Weg** mitgeteilt werden — es gibt keinen separaten Feedback-Kanal. Kennzeichnen Sie solche Kommentare am Anfang kurz mit **„Gesamtbewertung:"** oder **„Übergreifend:"**, damit sie bei der Auswertung als allgemeines Feedback erkennbar sind.
+- Die Bemerkung sollte sich auf den **konkreten Inhalt der bewerteten Antwort** beziehen
+- Für **allgemeine Anmerkungen zur Funktionalität** der Anwendung (z. B. zur Bedienung, zu Personalisierung oder Datei-Upload) oder eine **rollenbezogene Gesamteinschätzung** nutzen Sie bitte das separate **Feedback-Formular** — erreichbar über den Menüpunkt **„Feedback"** neben „Readme" am oberen Bildschirmrand.
 
 ### Personalisierung ⚙️ 
 

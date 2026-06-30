@@ -87,20 +87,72 @@ def _extract_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def resolve_section_title(metadata: dict[str, Any]) -> str | None:
+    """Resolve the most specific human-readable label for one chunk.
+
+    Single source of truth for section-title resolution, shared between the
+    in-context citation hint (_extract_citation, below) and the post-hoc
+    citation panel / canonicalizer (app.py's _resolve_section_title, which
+    re-exports this). Priority: explicit section_title (standard_abschnitt
+    chunks) > anforderung_id (anforderung chunks — distinguishes e.g.
+    "OPS.2.2.A10" from every other Anforderung in the same Baustein) >
+    baustein_id + doc_type suffix (baustein_beschreibung/gefaehrdungslage) >
+    generic title.
+    """
+    explicit = metadata.get("section_title")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    anforderung_id = metadata.get("anforderung_id")
+    if isinstance(anforderung_id, str) and anforderung_id.strip():
+        return anforderung_id.strip()
+
+    baustein_id = metadata.get("baustein_id")
+    if isinstance(baustein_id, str) and baustein_id.strip():
+        doc_type = metadata.get("doc_type")
+        if doc_type == "baustein_beschreibung":
+            return f"{baustein_id} Beschreibung"
+        if doc_type == "baustein_gefaehrdungslage":
+            return f"{baustein_id} Gefaehrdungslage"
+        return baustein_id
+
+    title = metadata.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    return None
+
+
 def _extract_citation(payload: dict[str, Any]) -> str:
-    source = payload.get("source") or payload.get("document") or payload.get("title") or payload.get("file")
-    page = payload.get("page") or payload.get("page_number") or payload.get("pages")
-    module = payload.get("module") or payload.get("baustein")
-    parts: list[str] = []
-    if source:
-        parts.append(str(source))
-    if module:
-        parts.append(f"Modul {module}")
-    if page:
-        parts.append(f"Seite {page}")
-    if not parts:
-        return "Quelle unbekannt"
-    return " | ".join(parts)
+    """Build the "Quelle: ..." hint shown to the LLM for one retrieved chunk.
+
+    Previously used source/document/title/file priority, which for every
+    Kompendium chunk resolved to the constant "grundschutz.json" (always
+    truthy, identical across chunks) — the model had no way to distinguish
+    which specific Anforderung a chunk belonged to and defaulted to citing
+    whichever Baustein-level overview chunk it noticed. Now mirrors
+    resolve_section_title() so the model sees the exact, distinct alias
+    text it is expected to reproduce per system.md's citation format.
+    """
+    section_title = resolve_section_title(payload)
+    if not section_title:
+        # Non-Kompendium fallback (e.g. unexpected/foreign payload shapes).
+        source = payload.get("source") or payload.get("document") or payload.get("file")
+        section_title = str(source) if source else "Quelle unbekannt"
+
+    page_start = payload.get("page_start")
+    if not isinstance(page_start, int):
+        page = payload.get("page") or payload.get("page_number") or payload.get("pages")
+        page_start = page if isinstance(page, int) else None
+    page_end = payload.get("page_end")
+
+    if isinstance(page_start, int) and isinstance(page_end, int) and page_end != page_start:
+        page_label = f"S.{page_start}-{page_end}"
+    elif isinstance(page_start, int):
+        page_label = f"S.{page_start}"
+    else:
+        page_label = "S.?"
+
+    return f"{section_title} ({page_label})"
 
 
 def extract_source_file(payload: dict[str, Any]) -> str | None:
@@ -174,6 +226,7 @@ async def retrieve(
     *,
     source_scope: str | None = None,
     standard_id: str | None = None,
+    baustein_id: str | None = None,
     include_vectors: bool = False,
 ) -> list[RagResult]:
     """Retrieve documents matching the query.
@@ -183,6 +236,11 @@ async def retrieve(
         top_k: Number of results to return
         source_scope: Optional filter by source scope
         standard_id: Optional filter by standard ID
+        baustein_id: Optional filter restricting results to one IT-Grundschutz
+            Baustein (e.g. "OPS.1.1.3"). Only chunks of doc_type anforderung /
+            baustein_beschreibung / baustein_gefaehrdungslage carry this field;
+            standard_abschnitt chunks (BSI-200-x) never match and are excluded
+            when this filter is set.
         include_vectors: If True, include embedding vectors in results (for personalization)
 
     Returns:
@@ -196,8 +254,10 @@ async def retrieve(
         must.append(FieldCondition(key="source_scope", match=MatchValue(value=source_scope)))
     if standard_id:
         must.append(FieldCondition(key="standard_id", match=MatchValue(value=standard_id)))
+    if baustein_id:
+        must.append(FieldCondition(key="baustein_id", match=MatchValue(value=baustein_id)))
     query_filter = Filter(must=must) if must else None
-    print("[DEBUG] retrieve", {"top_k": k, "source_scope": source_scope, "standard_id": standard_id})
+    print("[DEBUG] retrieve", {"top_k": k, "source_scope": source_scope, "standard_id": standard_id, "baustein_id": baustein_id})
     response = client.query_points(
         collection_name=QDRANT_COLLECTION,
         query=vector,

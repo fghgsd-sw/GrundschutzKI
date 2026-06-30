@@ -51,7 +51,7 @@ class UserProfile:
     message_count: int = 0
     keywords: list[dict[str, Any]] = field(default_factory=list)
     custom_prompt: str | None = None
-    personalization_enabled: bool = True
+    personalization_enabled: bool = False
 
     def has_sufficient_history(self) -> bool:
         """Check if user has enough history for personalization."""
@@ -207,7 +207,7 @@ async def update_user_profile(
                 message_count=existing_count,
                 keywords=existing.get("keywords", []),
                 custom_prompt=existing.get("custom_prompt"),
-                personalization_enabled=existing.get("personalization_enabled", True),
+                personalization_enabled=existing.get("personalization_enabled", False),
             )
 
     # Extract topics via LLM
@@ -247,7 +247,7 @@ async def update_user_profile(
         message_count=message_count,
         keywords=merged_keywords,
         custom_prompt=existing.get("custom_prompt") if existing else None,
-        personalization_enabled=existing.get("personalization_enabled", True) if existing else True,
+        personalization_enabled=existing.get("personalization_enabled", False) if existing else False,
     )
 
 
@@ -287,7 +287,7 @@ async def load_user_profile(
         message_count=data.get("message_count", 0),
         keywords=keywords,
         custom_prompt=data.get("custom_prompt"),
-        personalization_enabled=data.get("personalization_enabled", True),
+        personalization_enabled=data.get("personalization_enabled", False),
     )
 
 
@@ -350,7 +350,7 @@ async def regenerate_keywords(
         message_count=message_count,
         keywords=merged_keywords,
         custom_prompt=existing.get("custom_prompt") if existing else None,
-        personalization_enabled=existing.get("personalization_enabled", True) if existing else True,
+        personalization_enabled=existing.get("personalization_enabled", False) if existing else False,
     )
 
 

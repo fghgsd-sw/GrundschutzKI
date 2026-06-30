@@ -14,6 +14,26 @@ def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
 
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _csv_safe_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Defuse CSV/formula injection (DDE attack) before writing a row.
+
+    Spreadsheet apps (Excel, LibreOffice) treat a cell starting with =, +, -,
+    or @ as a formula. User-controlled values (username, feedback comments,
+    chat content) end up in these admin-facing exports, so prefix such cells
+    with a single quote to force plain-text rendering.
+    """
+    safe: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+            safe[key] = "'" + value
+        else:
+            safe[key] = value
+    return safe
+
+
 SCHEMA_SQL = """
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
@@ -122,6 +142,34 @@ END $$;
 -- Einzigartigkeits-Index für stepId
 CREATE UNIQUE INDEX IF NOT EXISTS "Feedback_stepId_unique"
 ON "Feedback" ("stepId");
+
+CREATE TABLE IF NOT EXISTS "Survey" (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_identifier TEXT NULL,
+  role TEXT NULL,
+  usability_feedback TEXT NULL,
+  answer_relevance TEXT NULL,
+  followup_relevance TEXT NULL,
+  overall_satisfaction INTEGER NULL,
+  trust_correctness TEXT NULL,
+  most_helpful_feature TEXT NULL,
+  improvement_suggestions TEXT NULL,
+  additional_remarks TEXT NULL,
+  submitted BOOLEAN NOT NULL DEFAULT TRUE,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
+  "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Migration falls "Survey" bereits ohne submitted/updatedAt existiert
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Survey' AND column_name = 'submitted') THEN
+    ALTER TABLE "Survey" ADD COLUMN submitted BOOLEAN NOT NULL DEFAULT TRUE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Survey' AND column_name = 'updatedAt') THEN
+    ALTER TABLE "Survey" ADD COLUMN "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW();
+  END IF;
+END $$;
 """
 
 
@@ -405,7 +453,7 @@ async def export_all_chats_zip(
 
                 for step in steps:
                     writer.writerow(
-                        {
+                        _csv_safe_row({
                             "thread_id": str(thread["id"]),
                             "thread_name": thread["name"] or "",
                             "user_identifier": thread["user_identifier"] or "",
@@ -423,7 +471,7 @@ async def export_all_chats_zip(
                             "step_input": step["input"] or "",
                             "step_output": step["output"] or "",
                             "step_is_error": bool(step["isError"]),
-                        }
+                        })
                     )
     finally:
         await conn.close()
@@ -498,7 +546,7 @@ async def export_feedback_csv(
             writer.writeheader()
             for row in rows:
                 writer.writerow(
-                    {
+                    _csv_safe_row({
                         "username": row["username"] or "",
                         "user_question": row["user_question"] or "",
                         "assistant_answer": row["assistant_answer"] or "",
@@ -508,7 +556,7 @@ async def export_feedback_csv(
                         "thread_id": str(row["thread_id"]) if row["thread_id"] else "",
                         "feedback_id": str(row["feedback_id"]) if row["feedback_id"] else "",
                         "step_id": str(row["step_id"]) if row["step_id"] else "",
-                    }
+                    })
                 )
     finally:
         await conn.close()
@@ -523,3 +571,144 @@ async def delete_user_by_email(database_url: str, email: str) -> None:
         await conn.execute('DELETE FROM "User" WHERE email = $1', email)
     finally:
         await conn.close()
+
+
+async def get_survey_draft(database_url: str, user_identifier: str) -> dict[str, Any] | None:
+    """Return this user's saved-but-not-yet-submitted draft, if any."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        row = await conn.fetchrow(
+            """
+            SELECT * FROM "Survey"
+            WHERE user_identifier = $1 AND submitted = FALSE
+            ORDER BY "updatedAt" DESC
+            LIMIT 1
+            """,
+            user_identifier,
+        )
+        return dict(row) if row else None
+    finally:
+        await conn.close()
+
+
+async def upsert_survey_response(
+    database_url: str,
+    *,
+    user_identifier: str | None,
+    role: str | None,
+    usability_feedback: str | None,
+    answer_relevance: str | None,
+    followup_relevance: str | None,
+    overall_satisfaction: int | None,
+    trust_correctness: str | None,
+    most_helpful_feature: str | None,
+    improvement_suggestions: str | None,
+    additional_remarks: str | None,
+    submitted: bool,
+) -> None:
+    """Save a Feedback-Formular entry.
+
+    If the user already has an unsubmitted draft, it is updated in place
+    (whether saving as draft again or finalizing it). Otherwise a new row
+    is inserted. This keeps at most one open draft per user while allowing
+    multiple finalized submissions over time.
+    """
+    conn = await asyncpg.connect(database_url)
+    try:
+        updated = await conn.fetchrow(
+            """
+            UPDATE "Survey"
+            SET role = $2, usability_feedback = $3, answer_relevance = $4,
+                followup_relevance = $5, overall_satisfaction = $6,
+                trust_correctness = $7, most_helpful_feature = $8,
+                improvement_suggestions = $9, additional_remarks = $10,
+                submitted = $11, "updatedAt" = NOW()
+            WHERE user_identifier = $1 AND submitted = FALSE
+            RETURNING id
+            """,
+            user_identifier,
+            role,
+            usability_feedback,
+            answer_relevance,
+            followup_relevance,
+            overall_satisfaction,
+            trust_correctness,
+            most_helpful_feature,
+            improvement_suggestions,
+            additional_remarks,
+            submitted,
+        )
+        if updated is None:
+            await conn.execute(
+                """
+                INSERT INTO "Survey" (
+                    user_identifier, role, usability_feedback, answer_relevance,
+                    followup_relevance, overall_satisfaction, trust_correctness,
+                    most_helpful_feature, improvement_suggestions, additional_remarks,
+                    submitted
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                """,
+                user_identifier,
+                role,
+                usability_feedback,
+                answer_relevance,
+                followup_relevance,
+                overall_satisfaction,
+                trust_correctness,
+                most_helpful_feature,
+                improvement_suggestions,
+                additional_remarks,
+                submitted,
+            )
+    finally:
+        await conn.close()
+
+
+async def export_survey_csv(*, database_url: str, out_dir: Path) -> Path:
+    """Export all survey responses as CSV."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / f"survey-export-{_stamp()}.csv"
+
+    conn = await asyncpg.connect(database_url)
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT user_identifier, role, usability_feedback, answer_relevance,
+                   followup_relevance, overall_satisfaction, trust_correctness,
+                   most_helpful_feature, improvement_suggestions, additional_remarks,
+                   "createdAt"
+            FROM "Survey"
+            WHERE submitted = TRUE
+            ORDER BY "createdAt" DESC
+            """
+        )
+    finally:
+        await conn.close()
+
+    fieldnames = [
+        "user_identifier", "role", "usability_feedback", "answer_relevance",
+        "followup_relevance", "overall_satisfaction", "trust_correctness",
+        "most_helpful_feature", "improvement_suggestions", "additional_remarks",
+        "created_at",
+    ]
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                _csv_safe_row({
+                    "user_identifier": row["user_identifier"] or "",
+                    "role": row["role"] or "",
+                    "usability_feedback": row["usability_feedback"] or "",
+                    "answer_relevance": row["answer_relevance"] or "",
+                    "followup_relevance": row["followup_relevance"] or "",
+                    "overall_satisfaction": row["overall_satisfaction"] if row["overall_satisfaction"] is not None else "",
+                    "trust_correctness": row["trust_correctness"] or "",
+                    "most_helpful_feature": row["most_helpful_feature"] or "",
+                    "improvement_suggestions": row["improvement_suggestions"] or "",
+                    "additional_remarks": row["additional_remarks"] or "",
+                    "created_at": row["createdAt"].isoformat() if row["createdAt"] else "",
+                })
+            )
+
+    return csv_path

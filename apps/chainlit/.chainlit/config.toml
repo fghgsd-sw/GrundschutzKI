@@ -177,5 +177,12 @@ default_avatar_file_url = ""
 #     url = "https://github.com/Chainlit/chainlit/issues"
 #     target = "_blank" (default)  # Optional: "_self", "_parent", "_top".
 
+[[UI.header_links]]
+    name = "feedback"
+    display_name = "Feedback"
+    icon_url = "/public/logo.svg"
+    url = "/feedback"
+    target = "_self"
+
 [meta]
 generated_by = "2.9.6"

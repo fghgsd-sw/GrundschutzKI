@@ -51,11 +51,21 @@ from native_chat import (
     ensure_native_schema,
     export_all_chats_zip,
     export_feedback_csv,
+    export_survey_csv,
+    get_survey_draft,
     get_user_by_identifier,
     upsert_feedback,
+    upsert_survey_response,
     verify_user_email,
 )
-from rag_tool import build_context, extract_page, extract_source_file, format_citations, retrieve
+from rag_tool import (
+    build_context,
+    extract_page,
+    extract_source_file,
+    format_citations,
+    resolve_section_title,
+    retrieve,
+)
 from upload_handler import extract_text
 from settings import (
     APP_BASE_URL,
@@ -317,8 +327,41 @@ TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Die Nutzerfrage oder Suchanfrage."},
-                    "top_k": {"type": "integer", "description": "Anzahl der Treffer.", "default": 5},
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Die Nutzerfrage oder Suchanfrage, immer als natürlichsprachlicher Satz "
+                            "oder Begriff (z. B. 'Berechtigungsverwaltung organisatorische Anforderungen'). "
+                            "NIEMALS nur eine Baustein-ID oder Anforderungs-ID als query verwenden (z. B. "
+                            "NICHT 'ORP.4' oder 'ORP.4.A1') — das liefert keine brauchbaren Treffer, da die "
+                            "Suche auf semantischer Ähnlichkeit basiert, nicht auf exakter ID-Suche. Die "
+                            "ID-Einschränkung erfolgt ausschließlich über den separaten Parameter baustein_id."
+                        ),
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": (
+                            "Anzahl der Treffer. Standard 5–8. Bei breiten Aufzählungsfragen "
+                            "('Welche Anforderungen...', 'Welche Gefährdungen...' zu einem ganzen "
+                            "Baustein) einen höheren Wert (z. B. 14–16) verwenden, damit genügend "
+                            "der tatsächlich zugehörigen Anforderungen gefunden werden."
+                        ),
+                        "default": 5,
+                    },
+                    "baustein_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional: IT-Grundschutz-Baustein-ID (z. B. 'OPS.1.1.3'), auf die die "
+                            "Suche beschränkt werden soll. NUR setzen, wenn diese ID WÖRTLICH im Text "
+                            "der Nutzerfrage steht (z. B. '...gemäß OPS.1.1.3' oder '...Baustein ORP.4...'). "
+                            "NICHT setzen, wenn der Baustein nur über Titel/Thema/Akronym beschrieben wird "
+                            "(z. B. 'Identitäts- und Berechtigungsmanagement', 'IAM', 'Cloud-Nutzung') ohne "
+                            "die ID selbst zu nennen — auch wenn die zugehörige ID bekannt ist. Auch weglassen "
+                            "bei Vergleichsfragen, Fragen nach Zusammenhängen zwischen Bausteinen, oder wenn "
+                            "keine ID im Text vorkommt. query bleibt davon unabhängig immer "
+                            "natürlichsprachlich."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -933,6 +976,19 @@ def _source_alias(source_number: int, section_title: str | None, page_start: int
 
 _BSI_ID_PATTERN = re.compile(r"\b([A-Z]{2,4}\.\d+(?:\.\w+)*)\b")
 
+# Matches a rag_retrieve "query" that is ONLY a bare Baustein/Anforderung-ID
+# fragment (e.g. "ORP.4", "ORP.4.A", "ORP.4.A1") with no other descriptive
+# text — anchored start-to-end so a real sentence containing an ID is not
+# falsely flagged.
+_BARE_ID_QUERY_RE = re.compile(r"^[A-Z]{2,4}(?:\.\w+){0,3}\.?$")
+
+# Strips a trailing Anforderung suffix (.A1, .S12, .H3) from a baustein_id
+# tool argument, since the model sometimes passes the full Anforderung-ID it
+# saw in the question text (e.g. "OPS.2.2.A1") even though the Qdrant
+# baustein_id field only ever holds the bare Baustein-level ID ("OPS.2.2"),
+# causing a silent zero-hit filter.
+_BAUSTEIN_ID_ONLY_RE = re.compile(r"^([A-Z]{2,4}(?:\.\d+)+)(?:\.[ASH]\d+)?$")
+
 
 def _validate_citations(
     content: str,
@@ -998,27 +1054,10 @@ def _markdown_link(label: str, url: str) -> str:
 
 
 def _resolve_section_title(metadata: dict[str, Any]) -> str | None:
-    explicit = metadata.get("section_title")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-
-    anforderung_id = metadata.get("anforderung_id")
-    if isinstance(anforderung_id, str) and anforderung_id.strip():
-        return anforderung_id.strip()
-
-    baustein_id = metadata.get("baustein_id")
-    if isinstance(baustein_id, str) and baustein_id.strip():
-        doc_type = metadata.get("doc_type")
-        if doc_type == "baustein_beschreibung":
-            return f"{baustein_id} Beschreibung"
-        if doc_type == "baustein_gefaehrdungslage":
-            return f"{baustein_id} Gefaehrdungslage"
-        return baustein_id
-
-    title = metadata.get("title")
-    if isinstance(title, str) and title.strip():
-        return title.strip()
-    return None
+    # Thin wrapper: the actual resolution logic lives in rag_tool.py so the
+    # in-context citation hint shown to the LLM (build_context/_extract_citation)
+    # and this post-hoc citation panel use the exact same priority order.
+    return resolve_section_title(metadata)
 
 
 def _inject_clickable_refs(
@@ -1209,11 +1248,53 @@ _CITATION_CANONICAL_RE = re.compile(
 )
 
 _BSI_ID_RE = re.compile(r"[A-Z]{3,4}(?:\.\d+){1,3}(?:\.[ASH]\d+)?")
+# Matches the trailing Anforderung suffix of a BSI-ID (".a4", ".s12", ".h3"),
+# distinguishing a specific-Anforderung reference from a bare Baustein-ID.
+_ANFORDERUNG_SUFFIX_RE = re.compile(r"\.[ash]\d+$")
+
+
+_GERMAN_STOPWORDS = {
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einer", "eines", "einem", "einen",
+    "und", "oder", "auch", "sowie", "sowohl", "als", "wie", "dass", "diese", "dieser", "dieses",
+    "diesen", "diesem", "werden", "wird", "wurde", "wurden", "sein", "sind", "ist", "war", "waren",
+    "kann", "können", "konnte", "soll", "sollen", "muss", "müssen", "müssten", "sollte", "sollten",
+    "sollten", "darf", "dürfen", "hat", "haben", "hatte", "für", "von", "bei", "mit", "auf", "im",
+    "in", "zu", "zur", "zum", "an", "am", "aus", "nach", "vor", "über", "unter", "durch", "wenn",
+    "dann", "nicht", "nur", "auch", "etwa", "z", "b", "bzw", "etc", "deren", "dessen", "wobei",
+    "innerhalb", "entsprechend", "bezüglich", "gegebenenfalls",
+}
+
+
+def _content_overlap_scores(snippet_norm: str, candidate_token_sets: list[set[str]]) -> list[float]:
+    """IDF-weighted content overlap between a bullet and each candidate chunk.
+
+    A plain shared-word count fails when several Anforderungen of the same
+    Baustein share generic BSI boilerplate phrasing ("nicht benötigte ...
+    deaktivieren", "MUSS sichergestellt werden") regardless of topic — that
+    inflated the wrong candidate's score as often as the right one. Weighting
+    each shared word by 1/(how many candidates contain it) suppresses
+    Baustein-wide boilerplate and rewards genuinely topic-specific vocabulary
+    that only the correct candidate shares with the bullet.
+    """
+    if not snippet_norm or not candidate_token_sets:
+        return [0.0] * len(candidate_token_sets)
+    snippet_tokens = {t for t in snippet_norm.split() if len(t) > 3 and t not in _GERMAN_STOPWORDS}
+    if not snippet_tokens:
+        return [0.0] * len(candidate_token_sets)
+    doc_freq = {
+        tok: sum(1 for cset in candidate_token_sets if tok in cset)
+        for tok in snippet_tokens
+    }
+    return [
+        sum(1.0 / doc_freq[tok] for tok in snippet_tokens if tok in cset and doc_freq[tok] > 0)
+        for cset in candidate_token_sets
+    ]
 
 
 def _canonicalize_citations(
     text: str,
     source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]],
+    alias_to_full_text: dict[str, str] | None = None,
 ) -> str:
     """Final-pass canonicalizer: every `Quelle ...(S.X)` span in ``text`` is
     rewritten to the exact alias of the best-matching source_row, with any
@@ -1256,12 +1337,14 @@ def _canonicalize_citations(
 
     entries: list[dict[str, Any]] = []
     for _, alias, _, page_start, page_end, section_title, _ in source_rows:
+        full_text = (alias_to_full_text or {}).get(alias, "")
         entries.append(
             {
                 "alias": alias,
                 "section": norm(section_title or ""),
                 "page_start": page_start,
                 "page_end": page_end,
+                "token_set": set(norm(full_text).split()),
             }
         )
 
@@ -1274,39 +1357,126 @@ def _canonicalize_citations(
         bsi_match = _BSI_ID_RE.search(body)
         bsi_id = bsi_match.group(0).lower() if bsi_match else None
 
-        best_alias: str | None = None
-        best_score = 0
-        best_section_token_hits = 0
-        best_bsi_hit = False
+        if not (bsi_id and _ANFORDERUNG_SUFFIX_RE.search(bsi_id)):
+            # The citation body itself carries no specific Anforderung-ID —
+            # either none at all, or only the bare Baustein-ID (e.g. the
+            # model wrote the same generic "Quelle: ORP.4 Beschreibung
+            # (S.123-128)" alias for every bullet in a list). List items
+            # conventionally open with the exact Anforderung-ID being
+            # described (e.g. "ORP.4.A4 Aufgabenverteilung..."), even when
+            # the trailing citation doesn't repeat it — look for that on the
+            # same line, preferring the match closest to this citation.
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            preceding = text[line_start : match.start()]
+            for pre_match in reversed(list(_BSI_ID_RE.finditer(preceding))):
+                candidate = pre_match.group(0).lower()
+                if _ANFORDERUNG_SUFFIX_RE.search(candidate):
+                    bsi_id = candidate
+                    break
+
+        # `section` below is normalized via norm(), which replaces dots with
+        # spaces (e.g. "OPS.2.2.A1" -> "ops 2 2 a1"). bsi_id keeps its dots,
+        # so a raw substring check against section never matched, silently
+        # disabling the strongest disambiguation signal and letting generic
+        # Beschreibung/Gefaehrdungslage chunks win every tie against the
+        # specific Anforderung chunk they were retrieved alongside.
+        bsi_id_norm = norm(bsi_id) if bsi_id else None
+
+        # This bullet's own wording, used to verify that the winning chunk's
+        # text actually supports the claim — not just that its alias happens
+        # to satisfy the page/BSI-ID/title checks below. Needed because the
+        # model sometimes cites a real, exact, *wrong* sibling Anforderung
+        # (e.g. "SYS.1.8.A26" for a claim that is actually A22's content) —
+        # an exact BSI-ID match alone cannot catch that, since nothing about
+        # the citation text itself looks wrong.
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end_idx = text.find("\n", match.end())
+        if line_end_idx == -1:
+            line_end_idx = len(text)
+        bullet_norm = norm(text[line_start:line_end_idx])
+
+        base_results: list[tuple[int, int, bool, dict[str, Any]]] = []
         for entry in entries:
-            score = 0
+            base_score = 0
             section = entry["section"] or ""
             start = entry["page_start"]
             end = entry["page_end"] or start
             if isinstance(start, int) and isinstance(end, int) and start <= wanted_page <= end:
-                score += 3
-            bsi_hit = bool(bsi_id and bsi_id in section)
+                base_score += 3
+            bsi_hit = bool(bsi_id_norm and bsi_id_norm in section)
             if bsi_hit:
-                score += 4
+                base_score += 4
             section_tokens = section.split()[:5]
             token_hits = sum(1 for tok in section_tokens if tok in rnorm)
             if token_hits:
-                score += 2
-            if score > best_score:
-                best_score = score
-                best_alias = entry["alias"]
-                best_section_token_hits = token_hits
-                best_bsi_hit = bsi_hit
+                base_score += 2
+            base_results.append((base_score, token_hits, bsi_hit, entry))
+
+        # IDF must be computed over a small, locally-relevant comparison pool
+        # — not the full, often dozens-large aggregated candidate pool from
+        # every tool-call round this turn (unrelated chunks would dilute/
+        # distort word rarity), and not restricted to candidates with
+        # base_score > 0 either: the model sometimes cites the same wrong ID
+        # — wrong page *and* wrong Baustein — for several different bullets
+        # in a row, leaving zero structural signal pointing to the genuinely
+        # correct (but differently-numbered, differently-paged) chunk. Using
+        # plain (unweighted) overlap to pick the top-N most-relevant chunks
+        # as the IDF comparison pool finds that correct chunk by content
+        # alone, regardless of what the model's citation claims.
+        significant_tokens = {
+            t for t in bullet_norm.split() if len(t) > 3 and t not in _GERMAN_STOPWORDS
+        }
+        if significant_tokens:
+            raw_overlaps = [len(significant_tokens & r[3]["token_set"]) for r in base_results]
+            pool_size = min(8, len(base_results))
+            pool_indices = sorted(
+                range(len(base_results)), key=lambda i: raw_overlaps[i], reverse=True
+            )[:pool_size]
+            doc_freq = {
+                tok: sum(1 for i in pool_indices if tok in base_results[i][3]["token_set"])
+                for tok in significant_tokens
+            }
+            all_overlaps = [
+                sum(
+                    1.0 / doc_freq[tok]
+                    for tok in significant_tokens
+                    if tok in r[3]["token_set"] and doc_freq.get(tok, 0) > 0
+                )
+                for r in base_results
+            ]
+        else:
+            all_overlaps = [0.0] * len(base_results)
+
+        scored: list[tuple[float, int, int, bool, float, dict[str, Any]]] = []
+        for (base_score, token_hits, bsi_hit, entry), overlap in zip(base_results, all_overlaps):
+            ranking_score = base_score + overlap * 4
+            scored.append((ranking_score, base_score, token_hits, bsi_hit, overlap, entry))
+
+        best_ranking_score = max((r for r, *_ in scored), default=0)
+        tied = [item for item in scored if item[0] == best_ranking_score and best_ranking_score > 0]
+
+        if not tied:
+            return raw
+
+        _, best_score, best_section_token_hits, best_bsi_hit, best_overlap, best_entry = tied[0]
+        best_alias = best_entry["alias"]
 
         if not best_alias:
             return raw
 
-        # Require at least a page-range hit plus one content signal.
+        # Require at least a page-range hit plus one content signal — UNLESS
+        # the content-overlap signal alone is strong enough to stand on its
+        # own. That override matters when the model cites a real Anforderung
+        # with full confidence but picked the wrong one *and* the wrong
+        # Baustein (no page/BSI-ID overlap with the genuinely correct chunk
+        # at all) — page/BSI-ID/title checks have nothing to go on there, but
+        # a handful of clearly shared, distinctive words reliably do.
         has_content_signal = best_bsi_hit or best_section_token_hits >= 1
-        if best_score < 2 or (best_score == 3 and not has_content_signal):
+        strong_content_match = best_overlap >= 3.0
+        if (best_score < 2 or (best_score == 3 and not has_content_signal)) and not strong_content_match:
             print(
                 f"[WARN] citation.unresolved fragment={raw[:160]!r} "
-                f"bsi_id={bsi_id} page={wanted_page} best_score={best_score}"
+                f"bsi_id={bsi_id} page={wanted_page} best_score={best_score} best_overlap={best_overlap:.2f}"
             )
             return raw
 
@@ -1867,12 +2037,13 @@ def _append_citation_history(
 
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in [*history, entry]:
+    for item in [*(history or []), entry]:
         key = json.dumps(item, ensure_ascii=False, sort_keys=True)
         if key in seen:
             continue
         seen.add(key)
-        deduped.append
+        deduped.append(item)
+    return deduped[-max_entries:]
 
 
 def _build_citation_history_view(history: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
@@ -1931,10 +2102,10 @@ def _build_citation_history_view(history: list[dict[str, Any]]) -> tuple[str | N
                 if isinstance(page_start, int):
                     lines.append(f"Seiten: {_page_label(page_start, page_end if isinstance(page_end, int) else None)}")
                 if isinstance(section, str) and section.strip():
-                    lines.append(f"Abschnitt: {section.strip()}")
+                    lines.append(f"Abschnitt: *{section.strip()}*")
                 evidence = row.get("evidence")
                 if isinstance(evidence, str) and evidence.strip():
-                    lines.append(f"Belegsnippet: \"{evidence.strip()}\"")
+                    lines.append(f"Belegsnippet: *\"{evidence.strip()}\"*")
                 lines.append("")
                 merged_rows.append(row)
         else:
@@ -2068,6 +2239,7 @@ def _build_chat_actions(
     source_step_id: str,
     citation_panel_content: str | None = None,
     citation_source_rows: list[dict[str, Any]] | None = None,
+    original_question: str | None = None,
 ) -> list[cl.Action]:
     normalized_followups = _sanitize_followup_questions(followup_questions)
     base_payload: dict[str, Any] = {
@@ -2102,6 +2274,19 @@ def _build_chat_actions(
                 payload={
                     **base_payload,
                     "question": question,
+                },
+            )
+        )
+    if normalized_followups and isinstance(original_question, str) and original_question.strip():
+        actions.append(
+            cl.Action(
+                name="regenerate_followups",
+                label="Anschlussfragen neu vorschlagen",
+                tooltip="Neue, andere Anschlussfragen vorschlagen lassen",
+                icon="refresh-cw",
+                payload={
+                    **base_payload,
+                    "question": original_question,
                 },
             )
         )
@@ -2149,6 +2334,9 @@ async def _show_citation_sidebar(
     # Force a refresh even when the sidebar key is unchanged.
     await cl.ElementSidebar.set_elements([], key="citations_panel")
     await cl.ElementSidebar.set_elements(elements, key="citations_panel")
+
+
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 
 
 def _hash_password(password: str) -> str:
@@ -2288,6 +2476,15 @@ async def on_app_startup() -> None:
         # Validate input
         if not username or len(username) < 3:
             raise HTTPException(status_code=400, detail="Benutzername muss mindestens 3 Zeichen haben")
+        if not _USERNAME_RE.match(username):
+            # Restrict to a safe charset: usernames are written verbatim into
+            # admin-facing CSV exports (export_feedback_csv, export_all_chats_zip),
+            # so characters like '=', '+', '@' at the start could trigger CSV
+            # formula injection when an admin opens the export in a spreadsheet.
+            raise HTTPException(
+                status_code=400,
+                detail="Benutzername darf nur Buchstaben, Ziffern, Punkt, Bindestrich und Unterstrich enthalten (3-32 Zeichen)",
+            )
         if not email or "@" not in email:
             raise HTTPException(status_code=400, detail="Ungültige E-Mail-Adresse")
         if not password or len(password) < 8:
@@ -2402,14 +2599,245 @@ async def on_app_startup() -> None:
             filename=csv_file.name,
         )
 
-    @chainlit_fastapi_app.get("/export/feedback")
-    async def export_feedback(current_user=Depends(get_current_user)):
+    # Fixed mint-green background rather than trying to sync with Chainlit's
+    # in-app theme toggle: the localStorage-based theme detection couldn't be
+    # verified against the live frontend and didn't track the chosen theme
+    # reliably. A single pleasant, theme-independent palette is more
+    # predictable than a heuristic that might silently mismatch.
+    _FEEDBACK_FORM_STYLE = """
+        :root {
+            --bg: #e3f6ec; --fg: #163a2c; --muted: #4d6b5d; --border: #b8ddc8;
+            --field-bg: #ffffff; --accent: #d6266b; --accent-hover: #b81f5a;
+            --draft-bg: #fff7e6; --draft-border: #f0c674;
+        }
+        body { font-family: sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px;
+            background: var(--bg); color: var(--fg); }
+        h1 { font-size: 1.4em; }
+        label { display: block; margin-top: 18px; font-weight: 500; }
+        .hint { font-weight: 400; font-size: 0.85em; color: var(--muted); margin-top: 2px; }
+        .draft-notice { background: var(--draft-bg); border: 1px solid var(--draft-border);
+            border-radius: 6px; padding: 10px 14px; font-size: 0.9em; margin-bottom: 18px; }
+        select, textarea, input[type=radio] { font: inherit; font-weight: 400; }
+        select, textarea { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px;
+            border: 1px solid var(--border); border-radius: 6px; background: var(--field-bg); color: var(--fg); }
+        textarea { min-height: 70px; resize: vertical; }
+        .scale { display: flex; gap: 16px; margin-top: 6px; }
+        .scale label { font-weight: 400; margin-top: 0; }
+        .actions { margin-top: 28px; display: flex; gap: 12px; }
+        button { padding: 10px 24px; border: none; border-radius: 6px;
+            font-size: 1em; cursor: pointer; }
+        button.primary { background: var(--accent); color: #fff; }
+        button.primary:hover { background: var(--accent-hover); }
+        button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+        button.secondary:hover { border-color: var(--accent); color: var(--accent); }
+    """
+
+    def _render_feedback_form(draft: dict[str, Any] | None) -> str:
+        profiles = CHAT_PROFILES_CONFIG.get("profiles", [])
+        profile_names = [p.get("name", "") for p in profiles if p.get("name")]
+        d = draft or {}
+
+        def esc(value: Any) -> str:
+            return html.escape(str(value)) if value else ""
+
+        role_options = "\n".join(
+            f'<option value="{html.escape(name)}" {"selected" if d.get("role") == name else ""}>{html.escape(name)}</option>'
+            for name in profile_names
+        )
+        feature_options = "\n".join(
+            f'<option value="{value}" {"selected" if d.get("most_helpful_feature") == value else ""}>{label}</option>'
+            for value, label in [
+                ("", "— keine Angabe —"),
+                ("Personalisierung", "Personalisierung"),
+                ("Datei-Upload", "Datei-Upload"),
+                ("Anschlussfragen", "Anschlussfragen"),
+                ("Quellenangaben", "Quellenangaben"),
+            ]
+        )
+        scale_radios = "".join(
+            f'<label><input type="radio" name="overall_satisfaction" value="{i}" '
+            f'{"checked" if d.get("overall_satisfaction") == i else ""}> {i}</label>'
+            for i in range(1, 6)
+        )
+        draft_notice = (
+            '<div class="draft-notice">Ein gespeicherter Entwurf wurde geladen. '
+            "Sie können fortfahren oder erneut zwischenspeichern.</div>"
+            if draft else ""
+        )
+
+        return f"""
+            <html><head><meta charset="utf-8"><title>Feedback — Grundschutz-KI</title>
+            <style>{_FEEDBACK_FORM_STYLE}</style></head>
+            <body>
+            <h1>Feedback zur Evaluation von Grundschutz-KI</h1>
+            {draft_notice}
+            <form method="post">
+                <label>In welcher Rolle evaluieren Sie die Anwendung?
+                    <select name="role" required>
+                        <option value="" disabled {"selected" if not d.get("role") else ""}>— bitte auswählen —</option>
+                        {role_options}
+                    </select>
+                </label>
+
+                <label>Einschätzung zur Usability / User Experience der Grundschutz-KI
+                    <textarea name="usability_feedback">{esc(d.get("usability_feedback"))}</textarea>
+                </label>
+
+                <label>Wie praxisrelevant schätzen Sie die Antworten ein?
+                    <textarea name="answer_relevance">{esc(d.get("answer_relevance"))}</textarea>
+                </label>
+
+                <label>Wie praxisrelevant schätzen Sie die Anschlussfragen ein?
+                    <textarea name="followup_relevance">{esc(d.get("followup_relevance"))}</textarea>
+                </label>
+
+                <label>Gesamtzufriedenheit
+                    <div class="scale">{scale_radios}</div>
+                    <div class="hint">1 = sehr unzufrieden, 5 = sehr zufrieden</div>
+                </label>
+
+                <label>Wie sehr vertrauen Sie der fachlichen Korrektheit der Antworten?
+                    <textarea name="trust_correctness">{esc(d.get("trust_correctness"))}</textarea>
+                </label>
+
+                <label>Welche Funktion fanden Sie am hilfreichsten?
+                    <select name="most_helpful_feature">
+                        {feature_options}
+                    </select>
+                </label>
+
+                <label>Was fehlt oder sollte verbessert werden?
+                    <textarea name="improvement_suggestions">{esc(d.get("improvement_suggestions"))}</textarea>
+                </label>
+
+                <label>Sonstige Anmerkungen
+                    <textarea name="additional_remarks">{esc(d.get("additional_remarks"))}</textarea>
+                </label>
+
+                <div class="actions">
+                    <button type="submit" formaction="/feedback/save-draft" class="secondary">Entwurf speichern</button>
+                    <button type="submit" formaction="/feedback/submit" class="primary">Absenden</button>
+                </div>
+            </form>
+            </body></html>
+        """
+
+    @chainlit_fastapi_app.get("/feedback")
+    async def feedback_form(current_user=Depends(get_current_user)):
+        if current_user is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        identifier = getattr(current_user, "identifier", None)
+        draft = await get_survey_draft(DATABASE_URL, identifier) if identifier else None
+        return fastapi.responses.HTMLResponse(content=_render_feedback_form(draft))
+
+    async def _feedback_save(
+        current_user,
+        *,
+        submitted: bool,
+        role: str,
+        usability_feedback: str,
+        answer_relevance: str,
+        followup_relevance: str,
+        overall_satisfaction: int | None,
+        trust_correctness: str,
+        most_helpful_feature: str,
+        improvement_suggestions: str,
+        additional_remarks: str,
+    ):
+        if current_user is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        await upsert_survey_response(
+            DATABASE_URL,
+            user_identifier=getattr(current_user, "identifier", None),
+            role=role or None,
+            usability_feedback=usability_feedback,
+            answer_relevance=answer_relevance,
+            followup_relevance=followup_relevance,
+            overall_satisfaction=overall_satisfaction,
+            trust_correctness=trust_correctness,
+            most_helpful_feature=most_helpful_feature,
+            improvement_suggestions=improvement_suggestions,
+            additional_remarks=additional_remarks,
+            submitted=submitted,
+        )
+        heading = "Vielen Dank für Ihr Feedback!" if submitted else "Entwurf gespeichert"
+        body = (
+            "Ihre Rückmeldung wurde eingereicht und kann nicht mehr bearbeitet werden."
+            if submitted
+            else "Sie können jederzeit zurückkehren und das Formular vervollständigen."
+        )
+        return fastapi.responses.HTMLResponse(content=f"""
+            <html><head><meta charset="utf-8"><style>{_FEEDBACK_FORM_STYLE}</style></head>
+            <body style='text-align:center;padding-top:60px'>
+            <h2>{heading}</h2>
+            <p>{body}</p>
+            <p><a href="/feedback" style="color:var(--accent)">Zurück zum Formular</a>
+               · <a href="{APP_BASE_URL}" style="color:var(--accent)">Zurück zur Anwendung</a></p>
+            </body></html>
+        """)
+
+    @chainlit_fastapi_app.post("/feedback/submit")
+    async def feedback_submit(
+        current_user=Depends(get_current_user),
+        role: str = fastapi.Form(...),
+        usability_feedback: str = fastapi.Form(""),
+        answer_relevance: str = fastapi.Form(""),
+        followup_relevance: str = fastapi.Form(""),
+        overall_satisfaction: int = fastapi.Form(...),
+        trust_correctness: str = fastapi.Form(""),
+        most_helpful_feature: str = fastapi.Form(""),
+        improvement_suggestions: str = fastapi.Form(""),
+        additional_remarks: str = fastapi.Form(""),
+    ):
+        return await _feedback_save(
+            current_user,
+            submitted=True,
+            role=role,
+            usability_feedback=usability_feedback,
+            answer_relevance=answer_relevance,
+            followup_relevance=followup_relevance,
+            overall_satisfaction=overall_satisfaction,
+            trust_correctness=trust_correctness,
+            most_helpful_feature=most_helpful_feature,
+            improvement_suggestions=improvement_suggestions,
+            additional_remarks=additional_remarks,
+        )
+
+    @chainlit_fastapi_app.post("/feedback/save-draft")
+    async def feedback_save_draft(
+        current_user=Depends(get_current_user),
+        role: str = fastapi.Form(""),
+        usability_feedback: str = fastapi.Form(""),
+        answer_relevance: str = fastapi.Form(""),
+        followup_relevance: str = fastapi.Form(""),
+        overall_satisfaction: str = fastapi.Form(""),
+        trust_correctness: str = fastapi.Form(""),
+        most_helpful_feature: str = fastapi.Form(""),
+        improvement_suggestions: str = fastapi.Form(""),
+        additional_remarks: str = fastapi.Form(""),
+    ):
+        return await _feedback_save(
+            current_user,
+            submitted=False,
+            role=role,
+            usability_feedback=usability_feedback,
+            answer_relevance=answer_relevance,
+            followup_relevance=followup_relevance,
+            overall_satisfaction=int(overall_satisfaction) if overall_satisfaction.isdigit() else None,
+            trust_correctness=trust_correctness,
+            most_helpful_feature=most_helpful_feature,
+            improvement_suggestions=improvement_suggestions,
+            additional_remarks=additional_remarks,
+        )
+
+    @chainlit_fastapi_app.get("/export/survey")
+    async def export_survey(current_user=Depends(get_current_user)):
         if current_user is None:
             raise HTTPException(status_code=401, detail="Unauthorized")
         user_meta = getattr(current_user, "metadata", None) or {}
         if user_meta.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
-        csv_file = await export_feedback_csv(
+        csv_file = await export_survey_csv(
             database_url=DATABASE_URL,
             out_dir=CHAT_EXPORT_DIR,
         )
@@ -2426,6 +2854,10 @@ async def on_app_startup() -> None:
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/feedback")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/register")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/verify")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/feedback")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/feedback/submit")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/feedback/save-draft")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/survey")
 
     print("[DEBUG] full route list after reordering:")
     for i, r in enumerate(chainlit_fastapi_app.router.routes):
@@ -2754,8 +3186,9 @@ def _build_chat_settings(
     if chat_profile_config is None and current_profile:
         chat_profile_config = _get_profile_by_name(current_profile)
 
-    # Determine personalization state and keywords from profile
-    personalization_on = True
+    # Determine personalization state and keywords from profile.
+    # Default OFF: users must consciously opt in via the Settings switch.
+    personalization_on = False
     active_kw_values: list[str] = []
     if user_profile:
         personalization_on = user_profile.personalization_enabled
@@ -3159,6 +3592,70 @@ async def ask_followup(action: cl.Action):
         await main(cl.Message(content=question))
 
 
+@cl.action_callback("regenerate_followups")
+async def regenerate_followups(action: cl.Action):
+    """Suggest fresh follow-up questions, added alongside the existing ones.
+
+    Deliberately additive rather than replacing the original buttons —
+    Chainlit's update/remove semantics for already-sent Actions on a message
+    aren't something we can verify without live access to the running
+    frontend, so appending new buttons via action.send(for_id=...) is the
+    only behavior we can be confident about.
+    """
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    question = payload.get("question")
+    source_step_id = payload.get("source_step_id")
+    existing_followups = payload.get("followup_questions") or []
+    if not isinstance(question, str) or not question.strip() or not source_step_id:
+        return
+
+    avoid_list = "\n".join(f"- {q}" for q in existing_followups) if existing_followups else "(keine)"
+    regen_messages = [
+        {
+            "role": "system",
+            "content": (
+                "Du schlägst ausschließlich neue Anschlussfragen im Kontext IT-Grundschutz vor. "
+                "Gib genau 3 neue, thematisch passende Fragen aus, jede in einer eigenen Zeile, "
+                "ohne Nummerierung, ohne Anführungszeichen, ohne zusätzlichen Text. "
+                "Wiederhole keine der bereits gestellten Fragen."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Ursprüngliche Frage: {question}\n\n"
+                f"Bereits vorgeschlagene Anschlussfragen (nicht wiederholen):\n{avoid_list}\n\n"
+                "Gib 3 neue Anschlussfragen."
+            ),
+        },
+    ]
+    try:
+        response = await chat(regen_messages)
+        raw_text = response.choices[0].message.content or ""
+    except Exception as exc:
+        print(f"[WARN] regenerate_followups failed: {exc}")
+        await cl.Message(content="Neue Anschlussfragen konnten nicht generiert werden.").send()
+        return
+
+    new_followups = _sanitize_followup_questions(
+        [line.strip("-•*123456789. ").strip() for line in raw_text.splitlines() if line.strip()]
+    )
+    if not new_followups:
+        return
+
+    combined_followups = list(existing_followups) + new_followups
+    cl.user_session.set("followup_questions", combined_followups)
+
+    fresh_actions = _build_chat_actions(
+        followup_questions=new_followups,
+        has_citations_panel=False,
+        source_step_id=source_step_id,
+        original_question=question,
+    )
+    for fresh_action in fresh_actions:
+        await fresh_action.send(for_id=source_step_id)
+
+
 @cl.on_message
 async def main(message: cl.Message):
     if await _handle_control_message(message):
@@ -3332,23 +3829,46 @@ async def main(message: cl.Message):
 
                 args = json.loads(tool_call.function.arguments or "{}")
                 query = str(args.get("query") or message.content or "")
+                if _BARE_ID_QUERY_RE.match(query.strip()):
+                    # Defense in depth: despite the tool description warning against
+                    # it, the model occasionally passes a bare Baustein/Anforderung ID
+                    # (e.g. "ORP.4", "ORP.4.A1") as the embedding query — semantically
+                    # useless for vector search, causing repeated low-quality retries.
+                    # Fall back to the original user message, which is always richer.
+                    query = message.content or query
+
                 raw_top_k = args.get("top_k")
                 try:
                     requested_top_k = int(raw_top_k) if raw_top_k is not None else TOP_K
                 except (TypeError, ValueError):
                     requested_top_k = TOP_K
                 top_k = max(1, min(requested_top_k, MAX_TOP_K))
+                raw_baustein_id = args.get("baustein_id")
+                baustein_id = raw_baustein_id.strip() if isinstance(raw_baustein_id, str) and raw_baustein_id.strip() else None
+                if baustein_id:
+                    id_match = _BAUSTEIN_ID_ONLY_RE.match(baustein_id)
+                    if id_match:
+                        baustein_id = id_match.group(1)
+                if baustein_id and baustein_id.lower() not in (message.content or "").lower():
+                    # Defense in depth: despite the system-prompt rule ("only set
+                    # baustein_id if it appears literally in the question"), the
+                    # model sometimes carries a baustein_id over from an earlier
+                    # turn's conversation context for an unrelated follow-up
+                    # question that never mentions it, silently scoping retrieval
+                    # away from the actually relevant Baustein. Only honor the
+                    # filter if the ID is literally present in THIS message.
+                    baustein_id = None
 
-                signature = f"{function_name}:{json.dumps({'query': query, 'top_k': top_k}, ensure_ascii=False, sort_keys=True)}"
+                signature = f"{function_name}:{json.dumps({'query': query, 'top_k': top_k, 'baustein_id': baustein_id}, ensure_ascii=False, sort_keys=True)}"
                 if signature in cached_tool_payloads:
                     results, tool_payload = cached_tool_payloads[signature]
                     with cl.Step(name="rag_retrieve", type="tool") as step:
-                        step.input = {"query": query, "top_k": top_k, "cached": True}
+                        step.input = {"query": query, "top_k": top_k, "baustein_id": baustein_id, "cached": True}
                         step.output = {"hits": len(results), "cached": True}
                 else:
                     with cl.Step(name="rag_retrieve", type="tool") as step:
-                        step.input = {"query": query, "top_k": top_k}
-                        results = await retrieve(query=query, top_k=top_k)
+                        step.input = {"query": query, "top_k": top_k, "baustein_id": baustein_id}
+                        results = await retrieve(query=query, top_k=top_k, baustein_id=baustein_id)
                         print("[DEBUG] rag_retrieve", "hits=", len(results))
                         for _i, _r in enumerate(results, 1):
                             _m = _r.metadata
@@ -3472,25 +3992,73 @@ async def main(message: cl.Message):
         ):
             source_catalog_changed = True
         cl.user_session.set("source_catalog", session_source_catalog)
-        seen_links: set[tuple[str, int | None]] = set()
+        seen_links: set[tuple[str, int | None, str | None]] = set()
         source_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]] = []
         alias_by_index: dict[int, str] = {}
         url_by_index: dict[int, str] = {}
         source_rows_for_session: list[dict[str, Any]] = []
         alias_to_url: dict[str, str] = {}
+        alias_to_full_text: dict[str, str] = {}
+        allowed_pdf_names = _allowed_source_pdf_names()
+
+        # Uncapped candidate pool for citation correction, separate from the
+        # MAX_SOURCE_LINKS-limited source_rows built below. MAX_SOURCE_LINKS
+        # exists to keep the displayed PDF-link sidebar manageable, but
+        # aggregating results across several tool-call rounds (e.g. when the
+        # model re-queries the same Baustein) routinely surfaces more than 8
+        # distinct chunks — capping the canonicalizer's candidate list to the
+        # same 8 silently drops genuinely-cited, lower-scored Anforderungen
+        # from consideration, leaving the canonicalizer no choice but to fall
+        # back to whichever generic Beschreibung/Gefaehrdungslage chunk
+        # survived the cap.
+        canon_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]] = []
+        canon_alias_to_full_text: dict[str, str] = {}
+        _canon_seen: set[tuple[str, int | None, str | None]] = set()
+        for _canon_idx, _canon_result in enumerate(last_results, start=1):
+            _canon_file = extract_source_file(_canon_result.metadata)
+            if not _canon_file:
+                continue
+            _canon_page = extract_page(_canon_result.metadata)
+            _canon_section = _resolve_section_title(_canon_result.metadata)
+            _canon_key = (_canon_file, _canon_page, _canon_section)
+            if _canon_key in _canon_seen:
+                continue
+            _canon_seen.add(_canon_key)
+            _canon_page_end = (
+                _canon_result.metadata.get("page_end")
+                if isinstance(_canon_result.metadata.get("page_end"), int)
+                else None
+            )
+            _canon_alias = _source_alias(_canon_idx, _canon_section, _canon_page, _canon_page_end)
+            canon_rows.append((_canon_idx, _canon_alias, _canon_file, _canon_page, _canon_page_end, _canon_section, ""))
+            canon_alias_to_full_text[_canon_alias] = _canon_result.text or ""
+
         desired_sources = _desired_source_count(content, len(last_results))
         if MAX_SOURCE_LINKS > 0:
             desired_sources = min(desired_sources, MAX_SOURCE_LINKS)
-        allowed_pdf_names = _allowed_source_pdf_names()
         display_counter = 1
         for idx, result in enumerate(last_results, start=1):
             file_name = extract_source_file(result.metadata)
             if not file_name:
                 continue
             page = extract_page(result.metadata)
-            key = (file_name, page)
+            # Include section_title in the dedup key: for Kompendium chunks,
+            # file_name is a constant PDF and several distinct Anforderungen
+            # routinely share the same page (e.g. ORP.4.A4 and ORP.4.A2 both
+            # on p.125) — keying on (file, page) alone collapsed them into a
+            # single citation entry, silently discarding the more specific
+            # one and leaving only one alias for several different sources.
+            section_title_for_key = _resolve_section_title(result.metadata)
+            key = (file_name, page, section_title_for_key)
             if key in seen_links:
-                existing_alias = next((alias for _, alias, fname, pstart, _, _, _ in source_rows if fname == file_name and pstart == page), None)
+                existing_alias = next(
+                    (
+                        alias
+                        for _, alias, fname, pstart, _, sect, _ in source_rows
+                        if fname == file_name and pstart == page and sect == section_title_for_key
+                    ),
+                    None,
+                )
                 if existing_alias:
                     alias_by_index[idx] = existing_alias
                     existing_url = alias_to_url.get(existing_alias)
@@ -3500,7 +4068,7 @@ async def main(message: cl.Message):
             file_path = _resolve_source_pdf_path(file_name, allowed_pdf_names)
             if file_path is not None:
                 page_end = result.metadata.get("page_end") if isinstance(result.metadata.get("page_end"), int) else None
-                section_title = _resolve_section_title(result.metadata)
+                section_title = section_title_for_key
                 page_start = extract_page(result.metadata)
                 alias = _source_alias(display_counter, section_title, page_start, page_end)
                 pdf_url = _source_pdf_url(file_name)
@@ -3510,6 +4078,7 @@ async def main(message: cl.Message):
                 alias_by_index[idx] = alias
                 url_by_index[idx] = pdf_url
                 alias_to_url[alias] = pdf_url
+                alias_to_full_text[alias] = result.text or ""
                 source_rows.append(
                     (
                         display_counter,
@@ -3568,6 +4137,16 @@ async def main(message: cl.Message):
         content = _normalize_source_mentions_by_content(content, source_rows)
         # Repair model outputs like: "Quelle 1: ... (S.30)(/sources/pdf/...)" to markdown links.
         content = _inject_naked_source_links(content)
+
+        # Repair mismatched "Quelle: ..." spans against the FULL, uncapped
+        # candidate list before pruning to cited_aliases below — otherwise a
+        # model that writes the same (wrong) alias for every bullet collapses
+        # source_rows down to that one wrong entry, and the canonicalizer
+        # pass further below never gets the other candidates back to correct
+        # against. Uses canon_rows (uncapped by MAX_SOURCE_LINKS), not the
+        # display-limited source_rows, so lower-scored but genuinely-cited
+        # Anforderungen remain available to correct against.
+        content = _canonicalize_citations(content, canon_rows, alias_to_full_text=canon_alias_to_full_text)
 
         cited_aliases = set()
         for _, alias, *_ in source_rows:
@@ -3666,9 +4245,9 @@ async def main(message: cl.Message):
                 else:
                     box_lines.append(f"- Quellen-ID: {visible_idx}")
                 box_lines.append(f"- Seiten: {page_label}")
-                box_lines.append(f"- Abschnitt: {section_label}")
+                box_lines.append(f"- Abschnitt: *{section_label}*")
                 if evidence:
-                    box_lines.append(f"- Belegsnippet: \"{evidence}\"")
+                    box_lines.append(f"- Belegsnippet: *\"{evidence}\"*")
                 box_lines.append("")
             detail_block = "\n".join(box_lines)
 
@@ -3712,6 +4291,7 @@ async def main(message: cl.Message):
             source_step_id=assistant_reply.id,
             citation_panel_content=citation_panel_content,
             citation_source_rows=source_rows_for_session,
+            original_question=message.content,
         )
         assistant_reply.actions = actions
         print("[DEBUG] followup_actions=", len(followup_questions), "total_actions=", len(actions))
@@ -3775,6 +4355,7 @@ async def main(message: cl.Message):
             followup_questions=followup_questions,
             has_citations_panel=False,
             source_step_id=assistant_reply.id,
+            original_question=message.content,
         )
         assistant_reply.actions = actions
         await assistant_reply.send()
