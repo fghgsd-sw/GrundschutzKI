@@ -8,10 +8,11 @@ import json
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from llm import embed
+from llm import chat, embed
 from settings import (
     CITATION_MAP_PATH,
     GRUNDSCHUTZ_SOURCE_PDF,
+    HYDE_ENABLED,
     QDRANT_API_KEY,
     QDRANT_COLLECTION,
     QDRANT_URL,
@@ -213,6 +214,31 @@ def extract_page(payload: dict[str, Any]) -> int | None:
     return None
 
 
+_HYDE_PROMPT = (
+    "Generiere einen kurzen Absatz (3–5 Sätze) auf Deutsch, der die folgende Frage beantwortet. "
+    "Verwende IT-Grundschutz-Fachvokabular und die normative Sprache des BSI (MUSS, SOLLTE, DARF NICHT). "
+    "Inhaltliche Genauigkeit ist nicht erforderlich — der Absatz dient ausschließlich zur Verbesserung "
+    "der semantischen Dokumentensuche.\n\nFrage: {query}\n\nAbsatz:"
+)
+
+
+async def _generate_hyde_query(query: str) -> str:
+    try:
+        response = await chat(
+            messages=[{"role": "user", "content": _HYDE_PROMPT.format(query=query)}],
+            tools=None,
+            tool_choice=None,
+        )
+        text = response.choices[0].message.content or ""
+        text = text.strip()
+        if text:
+            print(f"[DEBUG] HyDE generated: {text[:120]}...")
+            return text
+    except Exception as e:  # noqa: BLE001
+        print(f"[WARN] HyDE generation failed, falling back to raw query: {e}")
+    return query
+
+
 def _clean_text(text: str, max_len: int = 1200) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= max_len:
@@ -254,7 +280,8 @@ async def retrieve(
         List of RagResult objects
     """
     client = _get_client()
-    vector = (await embed([query]))[0]
+    embed_query = (await _generate_hyde_query(query)) if HYDE_ENABLED else query
+    vector = (await embed([embed_query]))[0]
     k = top_k or TOP_K
     must: list[FieldCondition] = []
     if source_scope:
