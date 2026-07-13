@@ -362,6 +362,22 @@ TOOLS: list[dict[str, Any]] = [
                             "natürlichsprachlich."
                         ),
                     },
+                    "schicht_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional: IT-Grundschutz-Schicht/-Schichtkürzel, auf die die Suche "
+                            "beschränkt werden soll — eine von: ORP, APP, SYS, NET, INF, CON, OPS, "
+                            "DER, IND, ISMS. NUR setzen, wenn dieses Kürzel WÖRTLICH im Text der "
+                            "Nutzerfrage steht (z. B. '...Anforderungen aus ORP...' oder "
+                            "'...im Bereich NET...'), UND keine spezifische Baustein-ID genannt wird "
+                            "(dann stattdessen baustein_id verwenden, nicht beides). Verhindert, dass "
+                            "bei schicht-weiten Fragen (z. B. 'Welche Anforderungen aus ORP sind "
+                            "wichtig für...') Treffer aus fachfremden Schichten (z. B. NET, SYS) "
+                            "zitiert werden, nur weil sie zufällig ähnliches Vokabular enthalten. "
+                            "NICHT setzen, wenn die Schicht nur über ihren ausgeschriebenen Namen "
+                            "(z. B. 'Organisation und Personal') ohne das Kürzel beschrieben wird."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -988,6 +1004,8 @@ _BARE_ID_QUERY_RE = re.compile(r"^[A-Z]{2,4}(?:\.\w+){0,3}\.?$")
 # baustein_id field only ever holds the bare Baustein-level ID ("OPS.2.2"),
 # causing a silent zero-hit filter.
 _BAUSTEIN_ID_ONLY_RE = re.compile(r"^([A-Z]{2,4}(?:\.\d+)+)(?:\.[ASH]\d+)?$")
+
+_VALID_SCHICHT_IDS = {"ORP", "APP", "SYS", "NET", "INF", "CON", "OPS", "DER", "IND", "ISMS"}
 
 
 def _validate_citations(
@@ -3701,19 +3719,12 @@ async def main(message: cl.Message):
             await cl.Message(
                 content=(
                     f"**{', '.join(new_files)}** als Kontext für diese Sitzung hinzugefügt.\n\n"
-                    "**Hinweis:** Diese Funktion befindet sich in der Evaluationsphase.\n\n"
-                    "- Hochgeladene Dokumente werden vollständig als Text in den Chat-Kontext geladen. "
-                    "In den Antworten wird auf die IT-Grundschutz-Dokumente verwiesen, NICHT auf"
-                    " Stellen in den hochgeladenen Dokumenten.\n\n"
-                    "- Mögliche Anwendungsfälle:\n"
-                    "    - **Entwurf Datensicherungskonzept** mit der Frage: \"Berücksichtigt dieser "
-                    "Entwurf eines Datensicherungskonzeptes alle Anforderungen und Empfehlungen des "
-                    "IT-Grundschutzes?\"\n"
-                    "    - **Liste der Kern- und Unterstützungsprozesse** mit der Frage: "
-                    "\"Welche Bausteine muss ich für den sicheren Betrieb meiner Kernprozesse "
-                    "berücksichtigen?\"\n"
-                    "    - ...\n\n"
-                    "Feedback zur Funktion und zu möglichen weiteren Anwendungsfällen ist willkommen."
+                    "**Hinweise:**\n"
+                    "- Hochgeladene Dokumente werden vollständig als Text in den Chat-Kontext geladen.\n"
+                    "- In den Antworten wird auf die IT-Grundschutz-Dokumente verwiesen, "
+                    "NICHT auf Stellen in den hochgeladenen Dokumenten.\n"
+                    "- Das Dokument bleibt für die **gesamte Sitzung** im Kontext. "
+                    "Für Fragen ohne Bezug zum Dokument empfiehlt sich ein **neuer Chat**."
                 )
             ).send()
 
@@ -3859,16 +3870,31 @@ async def main(message: cl.Message):
                     # filter if the ID is literally present in THIS message.
                     baustein_id = None
 
-                signature = f"{function_name}:{json.dumps({'query': query, 'top_k': top_k, 'baustein_id': baustein_id}, ensure_ascii=False, sort_keys=True)}"
+                raw_schicht_id = args.get("schicht_id")
+                schicht_id = raw_schicht_id.strip().upper() if isinstance(raw_schicht_id, str) and raw_schicht_id.strip() else None
+                if schicht_id not in _VALID_SCHICHT_IDS:
+                    schicht_id = None
+                if schicht_id and schicht_id.lower() not in (message.content or "").lower():
+                    # Same defense-in-depth check as baustein_id above: only
+                    # honor schicht_id if the abbreviation is literally present
+                    # in the current message, not carried over from history.
+                    schicht_id = None
+                if baustein_id and schicht_id:
+                    # baustein_id is strictly more specific — avoid redundant/
+                    # conflicting filters (e.g. baustein_id="ORP.4" combined
+                    # with schicht_id="ORP" is implied already).
+                    schicht_id = None
+
+                signature = f"{function_name}:{json.dumps({'query': query, 'top_k': top_k, 'baustein_id': baustein_id, 'schicht_id': schicht_id}, ensure_ascii=False, sort_keys=True)}"
                 if signature in cached_tool_payloads:
                     results, tool_payload = cached_tool_payloads[signature]
                     with cl.Step(name="rag_retrieve", type="tool") as step:
-                        step.input = {"query": query, "top_k": top_k, "baustein_id": baustein_id, "cached": True}
+                        step.input = {"query": query, "top_k": top_k, "baustein_id": baustein_id, "schicht_id": schicht_id, "cached": True}
                         step.output = {"hits": len(results), "cached": True}
                 else:
                     with cl.Step(name="rag_retrieve", type="tool") as step:
-                        step.input = {"query": query, "top_k": top_k, "baustein_id": baustein_id}
-                        results = await retrieve(query=query, top_k=top_k, baustein_id=baustein_id)
+                        step.input = {"query": query, "top_k": top_k, "baustein_id": baustein_id, "schicht_id": schicht_id}
+                        results = await retrieve(query=query, top_k=top_k, baustein_id=baustein_id, schicht_id=schicht_id)
                         print("[DEBUG] rag_retrieve", "hits=", len(results))
                         for _i, _r in enumerate(results, 1):
                             _m = _r.metadata

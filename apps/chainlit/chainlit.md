@@ -64,6 +64,7 @@ Diese Funktion stellt einen Workaround für zusätzlichen Kontext dar. Perspekti
 - Hochgeladene Dokumente werden vollständig als Text in den Chat-Kontext der aktuellen Sitzung geladen — **nicht** über die Wissensdatenbank durchsucht (kein RAG-Retrieval für eigene Dokumente)
 - In den Antworten wird ausschließlich auf die IT-Grundschutz-Dokumente verwiesen, **nicht** auf Stellen in den hochgeladenen Dokumenten
 - Der Kontext gilt nur für die laufende Sitzung und wird nicht dauerhaft gespeichert
+- Das hochgeladene Dokument bleibt für die **gesamte Sitzung** im Modell-Kontext — auch wenn spätere Fragen keinen Bezug dazu haben. Für allgemeine IT-Grundschutz-Fragen ohne Dokumentbezug empfiehlt sich ein **neuer Chat**.
 - Hochgeladene Dateien werden nach Ende der Sitzung gelöscht
 - große Dokumente werden gekürzt (Hinweis im Text: „[... Dokument gekürzt ...]"), um das Kontextfenster der Sprachmodelle nicht zu überlasten
 

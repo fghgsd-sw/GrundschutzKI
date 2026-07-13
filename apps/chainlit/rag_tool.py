@@ -227,6 +227,7 @@ async def retrieve(
     source_scope: str | None = None,
     standard_id: str | None = None,
     baustein_id: str | None = None,
+    schicht_id: str | None = None,
     include_vectors: bool = False,
 ) -> list[RagResult]:
     """Retrieve documents matching the query.
@@ -241,6 +242,12 @@ async def retrieve(
             baustein_beschreibung / baustein_gefaehrdungslage carry this field;
             standard_abschnitt chunks (BSI-200-x) never match and are excluded
             when this filter is set.
+        schicht_id: Optional filter restricting results to one IT-Grundschutz
+            Schicht/layer (e.g. "ORP", "APP", "SYS", "NET", "INF", "CON",
+            "OPS", "DER", "IND", "ISMS"). Broader than baustein_id — use when
+            the question names a whole layer (e.g. "ORP") rather than one
+            specific Baustein number. Same doc_type restriction as
+            baustein_id applies.
         include_vectors: If True, include embedding vectors in results (for personalization)
 
     Returns:
@@ -256,8 +263,19 @@ async def retrieve(
         must.append(FieldCondition(key="standard_id", match=MatchValue(value=standard_id)))
     if baustein_id:
         must.append(FieldCondition(key="baustein_id", match=MatchValue(value=baustein_id)))
+    if schicht_id:
+        must.append(FieldCondition(key="schicht_id", match=MatchValue(value=schicht_id)))
     query_filter = Filter(must=must) if must else None
-    print("[DEBUG] retrieve", {"top_k": k, "source_scope": source_scope, "standard_id": standard_id, "baustein_id": baustein_id})
+    print(
+        "[DEBUG] retrieve",
+        {
+            "top_k": k,
+            "source_scope": source_scope,
+            "standard_id": standard_id,
+            "baustein_id": baustein_id,
+            "schicht_id": schicht_id,
+        },
+    )
     response = client.query_points(
         collection_name=QDRANT_COLLECTION,
         query=vector,
