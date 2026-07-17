@@ -44,7 +44,7 @@ from chat_history import (
     update_chat_session_metadata,
     upsert_user_profile,
 )
-from llm import chat, message_to_dict
+from llm import chat, message_to_dict, stream_or_collect
 from native_chat import (
     check_user_exists,
     create_user,
@@ -94,6 +94,7 @@ from settings import (
     SYSTEM_PROMPT_PATH,
     TOP_K,
     CITATION_VALIDATION,
+    STREAMING_ENABLED,
 )
 from user_profile import (
     _kw_key,
@@ -330,23 +331,26 @@ TOOLS: list[dict[str, Any]] = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "Die Nutzerfrage oder Suchanfrage, immer als natürlichsprachlicher Satz "
-                            "oder Begriff (z. B. 'Berechtigungsverwaltung organisatorische Anforderungen'). "
-                            "NIEMALS nur eine Baustein-ID oder Anforderungs-ID als query verwenden (z. B. "
-                            "NICHT 'ORP.4' oder 'ORP.4.A1') — das liefert keine brauchbaren Treffer, da die "
-                            "Suche auf semantischer Ähnlichkeit basiert, nicht auf exakter ID-Suche. Die "
-                            "ID-Einschränkung erfolgt ausschließlich über den separaten Parameter baustein_id."
+                            "Die Nutzerfrage, möglichst unverändert oder minimal umformuliert als vollständiger "
+                            "natürlichsprachlicher Satz. KEINE Keyword-Extraktion — nicht auf einzelne Schlagwörter "
+                            "kürzen (also NICHT 'Management Prinzipien ISMS Aufbau' statt der vollständigen Frage). "
+                            "Die Suche basiert auf semantischer Ähnlichkeit; ein vollständiger Fragesatz liefert "
+                            "bessere Treffer als isolierte Begriffe. "
+                            "NIEMALS eine nackte ID oder ein Anforderungs-Suffix als query verwenden "
+                            "(NICHT 'ORP.4', NICHT 'ORP.4.A1', NICHT 'A1', NICHT 'A2') — das sind BSI-Kennungen "
+                            "aus dem abgerufenen Kontext, keine sinnvollen Suchanfragen. "
+                            "Die ID-Einschränkung erfolgt ausschließlich über den separaten Parameter baustein_id."
                         ),
                     },
                     "top_k": {
                         "type": "integer",
                         "description": (
-                            "Anzahl der Treffer. Standard 5–8. Bei breiten Aufzählungsfragen "
+                            "Anzahl der Treffer. Standard 8. Bei breiten Aufzählungsfragen "
                             "('Welche Anforderungen...', 'Welche Gefährdungen...' zu einem ganzen "
                             "Baustein) einen höheren Wert (z. B. 14–16) verwenden, damit genügend "
                             "der tatsächlich zugehörigen Anforderungen gefunden werden."
                         ),
-                        "default": 5,
+                        "default": 7,
                     },
                     "baustein_id": {
                         "type": "string",
@@ -993,10 +997,12 @@ def _source_alias(source_number: int, section_title: str | None, page_start: int
 _BSI_ID_PATTERN = re.compile(r"\b([A-Z]{2,4}\.\d+(?:\.\w+)*)\b")
 
 # Matches a rag_retrieve "query" that is ONLY a bare Baustein/Anforderung-ID
-# fragment (e.g. "ORP.4", "ORP.4.A", "ORP.4.A1") with no other descriptive
-# text — anchored start-to-end so a real sentence containing an ID is not
-# falsely flagged.
-_BARE_ID_QUERY_RE = re.compile(r"^[A-Z]{2,4}(?:\.\w+){0,3}\.?$")
+# fragment (e.g. "ORP.4", "ORP.4.A", "ORP.4.A1") or a naked requirement
+# suffix (e.g. "A1", "A2", "S3", "H1") with no other descriptive text —
+# anchored start-to-end so a real sentence containing an ID is not flagged.
+_BARE_ID_QUERY_RE = re.compile(
+    r"^(?:[A-Z]{2,4}(?:\.\w+){0,3}\.?|[A-Z]\d{1,2})$"
+)
 
 # Strips a trailing Anforderung suffix (.A1, .S12, .H3) from a baustein_id
 # tool argument, since the model sometimes passes the full Anforderung-ID it
@@ -1014,50 +1020,82 @@ def _validate_citations(
 ) -> str:
     """
     Programmatic citation check (Phase 1, no LLM call).
-    Removes citations where a BSI-ID in the surrounding text
-    doesn't match the baustein_id of the cited chunk.
+    Removes citations where a BSI-ID in the surrounding text doesn't match
+    the cited chunk. Anforderung-level chunks require an exact match on the
+    full Anforderungs-ID (e.g. a citation tagged "APP.1.1.A17" is only valid
+    if "APP.1.1.A17" itself — not merely a sibling Anforderung of the same
+    Baustein such as "APP.1.1.A3" — appears in the preceding text). Baustein-
+    level chunks (Beschreibung/Gefährdungslage) fall back to the looser
+    Baustein-prefix match, since they legitimately support any Anforderung
+    of that Baustein.
     Only acts on Kompendium chunks (anforderung/baustein doc_types).
     Returns cleaned content.
     """
     if not content or not source_rows:
         return content
 
-    # Build alias → baustein_id map from source_rows (list of dicts)
-    alias_baustein: dict[str, str | None] = {}
+    # Build alias → (anforderung_id, baustein_id) map from source_rows.
+    # These come from the raw Qdrant payload (threaded through onto
+    # source_rows_for_session dicts at construction time) — NOT from
+    # "evidence", which is only a plain first-sentence text snippet, never
+    # JSON. An earlier version of this function tried to json.loads()
+    # "evidence" for these IDs; that always failed silently (evidence never
+    # starts with "{"), leaving alias_ids permanently empty and making this
+    # whole check a no-op since it was first added.
+    alias_ids: dict[str, tuple[str | None, str | None]] = {}
     for row in source_rows:
-        alias = row.get("alias") if isinstance(row, dict) else (row[1] if len(row) > 1 else None)
-        evidence = row.get("evidence") if isinstance(row, dict) else (row[6] if len(row) > 6 else None)
+        if isinstance(row, dict):
+            alias = row.get("alias")
+            anforderung_id = row.get("anforderung_id")
+            baustein_id = row.get("baustein_id")
+        else:
+            alias = row[1] if len(row) > 1 else None
+            anforderung_id = None
+            baustein_id = None
         if not alias:
             continue
-        try:
-            meta = json.loads(evidence) if isinstance(evidence, str) and evidence.strip().startswith("{") else {}
-        except Exception:
-            meta = {}
-        alias_baustein[alias] = meta.get("baustein_id") or meta.get("anforderung_id")
+        if not anforderung_id and not baustein_id:
+            continue
+        alias_ids[alias] = (anforderung_id, baustein_id)
 
     def check_span(match: re.Match) -> str:
         raw = match.group(0)
         alias = raw  # after canonicalization alias == span text
-        baustein_id = alias_baustein.get(alias)
-        if not baustein_id:
+        ids = alias_ids.get(alias)
+        if not ids:
             return raw  # not a Kompendium chunk → keep
+        anforderung_id, baustein_id = ids
 
-        # Look 300 chars before the citation for a BSI-ID
-        start = max(0, match.start() - 300)
+        # Look for a BSI-ID within the CURRENT line/bullet only, not a flat
+        # 300-char lookback — bullets are short enough (~150-250 chars) that a
+        # flat count regularly spills into the PREVIOUS bullet's own trailing
+        # "Quelle: X.A1 (S.Y)" citation, which then falsely "confirms" the
+        # current bullet's wrong citation just because that ID happens to
+        # appear a few dozen characters further back on the previous line.
+        line_start = content.rfind("\n", 0, match.start()) + 1
+        start = max(0, match.start() - 300, line_start)
         context = content[start:match.start()]
         ids_in_context = {m.group(1) for m in _BSI_ID_PATTERN.finditer(context)}
 
         if not ids_in_context:
             return raw  # no BSI-ID in context → can't judge, keep
 
-        # Check if any context ID is covered by the cited baustein
-        valid = any(bid.startswith(baustein_id.split(".A")[0]) for bid in ids_in_context)
+        if anforderung_id:
+            # Anforderung-level chunk: the cited requirement's own ID must
+            # appear — a sibling Anforderung of the same Baustein is not enough.
+            valid = anforderung_id in ids_in_context
+        else:
+            # Baustein-level chunk (Beschreibung/Gefährdungslage): any ID of
+            # the same Baustein is acceptable as a Sammelquelle.
+            base = (baustein_id or "").split(".A")[0]
+            valid = bool(base) and any(bid.startswith(base) for bid in ids_in_context)
+
         if valid:
             return raw
 
         print(
             f"[CITATION_VALIDATION] removed mismatch: alias={alias[:60]!r} "
-            f"baustein={baustein_id} context_ids={ids_in_context}"
+            f"anforderung={anforderung_id} baustein={baustein_id} context_ids={ids_in_context}"
         )
         return ""
 
@@ -1489,6 +1527,17 @@ def _canonicalize_citations(
         # Baustein (no page/BSI-ID overlap with the genuinely correct chunk
         # at all) — page/BSI-ID/title checks have nothing to go on there, but
         # a handful of clearly shared, distinctive words reliably do.
+        #
+        # Tried and reverted (2026-07-17): tightening this gate to require
+        # genuine overlap even at higher structural scores, and stripping
+        # (returning "") unconfirmed non-Anforderung citations instead of
+        # leaving them unchanged. That surfaced a worse failure mode than the
+        # one it fixed — claims left with NO citation at all, violating the
+        # "every claim needs a Fundstelle" rule more visibly than a loosely
+        # related one did. Reducing citation reuse across unrelated claims
+        # needs to happen at generation time (system.md), not via post-hoc
+        # deletion here — deletion trades "wrong source" for "no source",
+        # which is not an improvement.
         has_content_signal = best_bsi_hit or best_section_token_hits >= 1
         strong_content_match = best_overlap >= 3.0
         if (best_score < 2 or (best_score == 3 and not has_content_signal)) and not strong_content_match:
@@ -3814,6 +3863,8 @@ async def main(message: cl.Message):
         except ValueError:
             max_tool_rounds = 12
         tool_round = 0
+        _early_streamed_reply: cl.Message | None = None
+        content_from_stream: str | None = None
 
         while getattr(current_msg, "tool_calls", None) and tool_round < max_tool_rounds:
             tool_round += 1
@@ -3946,17 +3997,62 @@ async def main(message: cl.Message):
                     metadata={"tool_name": "rag_retrieve"},
                 )
 
-            followup = await chat(_api_msgs(), tools=TOOLS, tool_choice="auto")
-            current_msg = followup.choices[0].message
-            print(
-                "[DEBUG] tool_round_followup",
-                "round=",
-                tool_round,
-                "content_empty=",
-                not bool(current_msg.content),
-                "tool_calls=",
-                bool(getattr(current_msg, "tool_calls", None)),
-            )
+            if STREAMING_ENABLED:
+                _lazy_msg: list[cl.Message | None] = [None]
+
+                async def _on_content_token(tok: str) -> None:
+                    if _lazy_msg[0] is None:
+                        _lazy_msg[0] = cl.Message(content="")
+                        await _lazy_msg[0].send()
+                    await _lazy_msg[0].stream_token(tok)
+
+                try:
+                    _streamed, _maybe_msg = await stream_or_collect(
+                        _api_msgs(), tools=TOOLS, tool_choice="auto",
+                        on_content_token=_on_content_token,
+                    )
+                except Exception as _stream_err:
+                    print(f"[WARN] streaming_failed_fallback: {_stream_err}")
+                    followup = await chat(_api_msgs(), tools=TOOLS, tool_choice="auto")
+                    current_msg = followup.choices[0].message
+                    print(
+                        "[DEBUG] tool_round_followup_fallback",
+                        "round=", tool_round,
+                        "content_empty=", not bool(current_msg.content),
+                        "tool_calls=", bool(getattr(current_msg, "tool_calls", None)),
+                    )
+                else:
+                    if _maybe_msg is not None:
+                        current_msg = _maybe_msg
+                        print(
+                            "[DEBUG] tool_round_followup",
+                            "round=", tool_round,
+                            "content_empty=", not bool(current_msg.content),
+                            "tool_calls=", bool(getattr(current_msg, "tool_calls", None)),
+                        )
+                    else:
+                        if _lazy_msg[0] is not None:
+                            await _lazy_msg[0].update()
+                        _early_streamed_reply = _lazy_msg[0]
+                        content_from_stream = _streamed or ""
+                        print(
+                            "[DEBUG] tool_round_streamed",
+                            "round=", tool_round,
+                            "streamed_len=", len(content_from_stream),
+                        )
+                        break
+            else:
+                followup = await chat(_api_msgs(), tools=TOOLS, tool_choice="auto")
+                current_msg = followup.choices[0].message
+                print(
+                    "[DEBUG] tool_round_followup",
+                    "round=",
+                    tool_round,
+                    "content_empty=",
+                    not bool(current_msg.content),
+                    "tool_calls=",
+                    bool(getattr(current_msg, "tool_calls", None)),
+                )
 
         last_results = sorted(
             aggregated_by_key.values(),
@@ -3964,7 +4060,9 @@ async def main(message: cl.Message):
             reverse=True,
         )
 
-        if getattr(current_msg, "tool_calls", None):
+        if content_from_stream is not None:
+            content = content_from_stream
+        elif getattr(current_msg, "tool_calls", None):
             # Safety stop: avoid endless tool loops, force final answer from collected context.
             print(
                 "[WARN] tool_round_limit_reached",
@@ -4116,6 +4214,8 @@ async def main(message: cl.Message):
                         evidence_snippet,
                     )
                 )
+                _anforderung_id = result.metadata.get("anforderung_id")
+                _baustein_id = result.metadata.get("baustein_id")
                 source_rows_for_session.append(
                     {
                         "alias": alias,
@@ -4125,6 +4225,11 @@ async def main(message: cl.Message):
                         "page_end": page_end if isinstance(page_end, int) else None,
                         "section": section_title if isinstance(section_title, str) else None,
                         "evidence": evidence_snippet if isinstance(evidence_snippet, str) else None,
+                        # Raw Qdrant payload IDs (not evidence, which is plain
+                        # text) — used by _validate_citations() for exact
+                        # Anforderungs-ID matching.
+                        "anforderung_id": _anforderung_id if isinstance(_anforderung_id, str) else None,
+                        "baustein_id": _baustein_id if isinstance(_baustein_id, str) else None,
                     }
                 )
                 display_counter += 1
@@ -4307,10 +4412,15 @@ async def main(message: cl.Message):
             message_metadata["citation_panel_content"] = citation_panel_content
             message_metadata["citation_source_rows"] = _sanitize_source_rows_payload(source_rows_for_session)
 
-        assistant_reply = cl.Message(
-            content=render_content,
-            metadata=message_metadata,
-        )
+        if _early_streamed_reply is not None:
+            assistant_reply = _early_streamed_reply
+            assistant_reply.content = render_content
+            assistant_reply.metadata = message_metadata
+        else:
+            assistant_reply = cl.Message(
+                content=render_content,
+                metadata=message_metadata,
+            )
         actions = _build_chat_actions(
             followup_questions=followup_questions,
             has_citations_panel=bool(citation_panel_content),
@@ -4342,7 +4452,10 @@ async def main(message: cl.Message):
                 source_rows_for_session,
             )
 
-        await assistant_reply.send()
+        if _early_streamed_reply is not None:
+            await assistant_reply.update()
+        else:
+            await assistant_reply.send()
         if citation_panel_content:
             history_panel_content, history_rows = _build_citation_history_view(
                 _sanitize_citation_history(cl.user_session.get("citation_history"))
