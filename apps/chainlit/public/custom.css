@@ -115,7 +115,8 @@ a.element-link {
   text-decoration: underline;
 }
 
-#gski-reg-form {
+#gski-reg-form,
+#gski-privacy-step {
   text-align: left;
   padding: 20px 24px;
   border-radius: 8px;
@@ -123,10 +124,47 @@ a.element-link {
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-#gski-reg-form h3 {
+#gski-reg-form h3,
+#gski-privacy-step h3 {
   text-align: center;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 600;
+}
+
+#gski-privacy-text {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  max-height: 280px;
+  overflow-y: auto;
+  margin-bottom: 14px;
+}
+
+#gski-privacy-text p {
+  margin: 0 0 10px;
+}
+
+#gski-privacy-text p:last-child {
+  margin-bottom: 0;
+}
+
+#gski-privacy-continue {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  margin-top: 4px;
+  border: none;
+  border-radius: 6px;
+  background: #1976d2;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms;
+}
+
+#gski-privacy-continue:hover {
+  background: #1565c0;
 }
 
 #gski-reg-form input {

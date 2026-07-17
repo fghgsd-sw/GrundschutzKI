@@ -113,9 +113,33 @@ def _load_system_prompt(path: Path) -> str | None:
     return None
 
 
+CHAINLIT_MD_PATH = Path(__file__).parent / "chainlit.md"
+
+
+def _load_privacy_notice() -> str:
+    """Extracts the "Hinweise zum Datenschutz" section from chainlit.md as
+    plain text. chainlit.md is the single source of truth for this legal
+    text — read fresh on every call (not cached) so an edit to the file
+    takes effect immediately, without a restart. Used both by the
+    pre-registration privacy step (via /auth/privacy-notice) and the
+    verification email, to avoid drifted duplicate copies of the same text.
+    """
+    if not CHAINLIT_MD_PATH.is_file():
+        return ""
+    content = CHAINLIT_MD_PATH.read_text(encoding="utf-8")
+    for section in re.split(r"\n##\s+", content):
+        if section.startswith("Hinweise zum Datenschutz"):
+            body = section[len("Hinweise zum Datenschutz"):].strip()
+            body = re.sub(r"\n-{3,}\s*$", "", body).strip()  # drop trailing "---" separator
+            body = re.sub(r"\*\*(.+?)\*\*", r"\1", body)  # drop markdown bold markers
+            return body
+    return ""
+
+
 async def _send_verification_email(to_email: str, username: str, token: str) -> None:
     """Send an email verification link via SMTP."""
     verify_url = f"{APP_BASE_URL.rstrip('/')}/auth/verify?token={token}"
+    privacy_notice = _load_privacy_notice()
     msg = EmailMessage()
     msg["Subject"] = "GrundschutzKI – E-Mail-Adresse bestätigen"
     msg["From"] = SMTP_FROM
@@ -124,14 +148,7 @@ async def _send_verification_email(to_email: str, username: str, token: str) -> 
         f"Hallo {username},\n\n"
         f"um die Registrierung abzuschließen, öffnen Sie bitte den unten stehenden Link.\n\n"
         f"Hinweise zum Datenschutz:\n\n"
-        f"Sie stimmen mit Ihrer Registrierung der Teilnahme an einer Evaluierung der "
-        f"Anwendung Grundschutz-KI zu. Im Evaluierungszeitraum vom 01. bis 22.07.2026 "
-        f"werden nur solche Daten ausgewertet, die Sie aktiv als Feedback (thumbs up/down "
-        f"+ Kommentar) geben. Die Auswertung erfolgt anonymisiert. Chatverläufe werden in "
-        f"der Anwendung gespeichert und für die Benutzerspezifische Beantwortung verwendet. "
-        f"Sie können Chatverläufe jederzeit selbständig löschen. Nach Abschluss der "
-        f"Evaluierungsphase wird das System zurückgesetzt und alle Benutzerbezogenen Daten "
-        f"werden gelöscht.\n\n\n"
+        f"{privacy_notice}\n\n\n"
         f"{verify_url}\n\n"
         f"Falls Sie sich nicht mit dieser E-Mail-Adresse registriert haben, ignorieren Sie "
         f"diese E-Mail oder melden Sie dies an dsb@fghgsd.de.\n\n"
@@ -2528,6 +2545,12 @@ async def on_app_startup() -> None:
         )
         return FileResponse(path=str(bundle), media_type="application/zip", filename=bundle.name)
 
+    # Public — served on the pre-login registration panel, before an account
+    # (and therefore any auth) exists. Source of truth is chainlit.md.
+    @chainlit_fastapi_app.get("/auth/privacy-notice")
+    async def get_privacy_notice():
+        return {"text": _load_privacy_notice()}
+
     # Registration endpoint for self-registration
     class RegisterRequest(BaseModel):
         username: str
@@ -2919,6 +2942,7 @@ async def on_app_startup() -> None:
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/sources/citations/{step_id}")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/all-chats")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/export/feedback")
+    _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/privacy-notice")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/register")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/auth/verify")
     _ensure_route_precedes_catch_all(chainlit_fastapi_app, "/feedback")

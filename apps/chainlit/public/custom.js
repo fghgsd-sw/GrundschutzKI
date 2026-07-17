@@ -178,6 +178,14 @@
         '<span>Noch kein Konto? </span>' +
         '<a href="#" id="gski-reg-toggle-link">Registrieren</a>' +
       "</div>" +
+      '<div id="gski-privacy-step" style="display:none">' +
+        '<h3 style="margin:0 0 12px">Hinweise zum Datenschutz</h3>' +
+        '<div id="gski-privacy-text">Lädt…</div>' +
+        '<button id="gski-privacy-continue" type="button">Weiter</button>' +
+        '<div class="gski-reg-toggle" style="margin-top:12px">' +
+          '<a href="#" id="gski-privacy-back-link">Zurück</a>' +
+        "</div>" +
+      "</div>" +
       '<form id="gski-reg-form" style="display:none">' +
         '<h3 style="margin:0 0 12px">Konto erstellen</h3>' +
         '<input id="gski-reg-user" type="text" placeholder="Benutzername (mind. 3 Zeichen)" autocomplete="username" />' +
@@ -197,28 +205,70 @@
   /* --- handlers --------------------------------------------------------- */
 
   function attachHandlers(panel) {
-    var toggleLink = panel.querySelector("#gski-reg-toggle-link");
-    var backLink   = panel.querySelector("#gski-reg-back-link");
-    var regForm    = panel.querySelector("#gski-reg-form");
-    var toggleDiv  = panel.querySelector(".gski-reg-toggle");
-    var submitBtn  = panel.querySelector("#gski-reg-submit");
-    var msgDiv     = panel.querySelector("#gski-reg-msg");
+    var toggleLink      = panel.querySelector("#gski-reg-toggle-link");
+    var backLink        = panel.querySelector("#gski-reg-back-link");
+    var regForm         = panel.querySelector("#gski-reg-form");
+    var toggleDiv       = panel.querySelector(".gski-reg-toggle");
+    var submitBtn       = panel.querySelector("#gski-reg-submit");
+    var msgDiv          = panel.querySelector("#gski-reg-msg");
+    var privacyStep     = panel.querySelector("#gski-privacy-step");
+    var privacyText     = panel.querySelector("#gski-privacy-text");
+    var privacyContinue = panel.querySelector("#gski-privacy-continue");
+    var privacyBackLink = panel.querySelector("#gski-privacy-back-link");
+    var privacyLoaded   = false;
 
-    toggleLink.addEventListener("click", function (e) {
-      e.preventDefault();
-      regForm.style.display = "block";
-      toggleDiv.style.display = "none";
-      var loginForm = findLoginForm();
-      if (loginForm) loginForm.style.display = "none";
-    });
-
-    backLink.addEventListener("click", function (e) {
-      e.preventDefault();
+    /* Resets the panel back to the initial "Noch kein Konto?" login view —
+       shared by both the privacy step's and the reg form's "back" links. */
+    function showLoginView() {
       regForm.style.display = "none";
+      privacyStep.style.display = "none";
       toggleDiv.style.display = "";
       msgDiv.style.display = "none";
       var loginForm = findLoginForm();
       if (loginForm) loginForm.style.display = "";
+    }
+
+    /* Clicking "Registrieren" shows the Datenschutz-Hinweis first — the
+       actual form fields only appear after "Weiter", so an account can
+       never be created without the notice having been shown. */
+    toggleLink.addEventListener("click", function (e) {
+      e.preventDefault();
+      toggleDiv.style.display = "none";
+      var loginForm = findLoginForm();
+      if (loginForm) loginForm.style.display = "none";
+      privacyStep.style.display = "block";
+
+      if (!privacyLoaded) {
+        fetch("/auth/privacy-notice")
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            var text = (data && data.text) || "";
+            var paragraphs = text.split(/\n\s*\n/).filter(function (p) { return p.trim(); });
+            privacyText.innerHTML = paragraphs.map(function (p) {
+              return "<p>" + p.trim() + "</p>";
+            }).join("");
+            privacyLoaded = true;
+          })
+          .catch(function () {
+            privacyText.textContent = "Hinweise konnten nicht geladen werden. Bitte später erneut versuchen.";
+          });
+      }
+    });
+
+    privacyContinue.addEventListener("click", function (e) {
+      e.preventDefault();
+      privacyStep.style.display = "none";
+      regForm.style.display = "block";
+    });
+
+    privacyBackLink.addEventListener("click", function (e) {
+      e.preventDefault();
+      showLoginView();
+    });
+
+    backLink.addEventListener("click", function (e) {
+      e.preventDefault();
+      showLoginView();
     });
 
     regForm.addEventListener("submit", function (e) {
