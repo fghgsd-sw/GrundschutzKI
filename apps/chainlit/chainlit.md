@@ -3,7 +3,8 @@
 Grundschutz-KI beantwortet Ihre Fragen zur Informationssicherheit auf Basis des IT-Grundschutz-Kompendiums, der 200-n Standards des BSI und des von Ihnen ggf. zusätzlich mitgegebenen Kontexts. Jede Antwort wird mit den zugrunde liegenden Fundstellen belegt.
 
 Grundschutz-KI erstellt zudem Anschlussfragen, die Ihnen  zusätzliche Perspektiven auf Ihr Thema liefern sollen.
-Bewerten Sie, wie gut das Ganze für Sie funktiert.
+
+*Bewerten Sie, wie gut das Ganze für Sie funktiert.*
 
 ---
 
