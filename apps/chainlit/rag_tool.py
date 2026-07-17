@@ -8,14 +8,21 @@ import json
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from llm import embed
+from llm import chat, embed
 from settings import (
+    BAUSTEIN_ROUTING_ENABLED,
+    BAUSTEIN_ROUTING_THRESHOLD,
     CITATION_MAP_PATH,
+    DOC_ROUTING_ENABLED,
+    DOC_ROUTING_GAP,
+    DOC_ROUTING_THRESHOLD,
     GRUNDSCHUTZ_SOURCE_PDF,
+    HYDE_ENABLED,
     QDRANT_API_KEY,
     QDRANT_COLLECTION,
     QDRANT_URL,
     SCORE_THRESHOLD,
+    SCORE_THRESHOLD_SCOPED,
     TOP_K,
 )
 
@@ -213,11 +220,249 @@ def extract_page(payload: dict[str, Any]) -> int | None:
     return None
 
 
+_HYDE_PROMPT = (
+    "Generiere einen kurzen Absatz (3–5 Sätze) auf Deutsch, der die folgende Frage im Kontext des "
+    "IT-Grundschutzes beantwortet. Verwende thematisch passendes Fachvokabular aus dem BSI-Kompendium "
+    "(technische Begriffe, Schichtbezeichnungen, Konzepte). Keine Baustein-IDs nennen. "
+    "Inhaltliche Genauigkeit ist nicht erforderlich — der Absatz dient ausschließlich zur Verbesserung "
+    "der semantischen Dokumentensuche.\n\nFrage: {query}\n\nAbsatz:"
+)
+
+
+async def _generate_hyde_query(query: str) -> str:
+    try:
+        response = await chat(
+            messages=[{"role": "user", "content": _HYDE_PROMPT.format(query=query)}],
+            tools=None,
+            tool_choice=None,
+        )
+        text = response.choices[0].message.content or ""
+        text = text.strip()
+        if text:
+            print(f"[DEBUG] HyDE generated: {text[:120]}...")
+            return text
+    except Exception as e:  # noqa: BLE001
+        print(f"[WARN] HyDE generation failed, falling back to raw query: {e}")
+    return query
+
+
 def _clean_text(text: str, max_len: int = 1200) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= max_len:
         return text
     return text[: max_len - 3].rstrip() + "..."
+
+
+# ---------------------------------------------------------------------------
+# Schicht 1: Regex-Dokumenten-Router
+# ---------------------------------------------------------------------------
+
+_STANDARD_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(?:BSI[- ])?Standard[- ]?200[- ]?1\b", re.I), "standard_200_1"),
+    (re.compile(r"\b(?:BSI[- ])?Standard[- ]?200[- ]?2\b", re.I), "standard_200_2"),
+    (re.compile(r"\b(?:BSI[- ])?Standard[- ]?200[- ]?3\b", re.I), "standard_200_3"),
+    (re.compile(r"\b(?:BSI[- ])?Standard[- ]?200[- ]?4\b", re.I), "standard_200_4"),
+]
+
+
+def detect_explicit_standard(query: str) -> str | None:
+    """Detects explicit BSI standard reference in query text (routing layer 1)."""
+    for pattern, standard_id in _STANDARD_PATTERNS:
+        if pattern.search(query):
+            return standard_id
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Schicht 2: Semantischer Dokumenten-Router
+# ---------------------------------------------------------------------------
+
+DOCUMENT_PROFILES: dict[str, str] = {
+    "standard_200_1": (
+        "BSI-Standard 200-1 behandelt Aufbau und Betrieb eines Informationssicherheits-"
+        "Managementsystems (ISMS). Inhalte: Definition des ISMS und des Sicherheitsprozesses, "
+        "Management-Prinzipien, Ressourcen und Mitarbeitereinbindung, Sicherheitsleitlinie, "
+        "Informationssicherheitsbeauftragter, kontinuierlicher Verbesserungsprozess (PDCA), "
+        "Kompatibilität mit ISO 27001 und ISO 27002, ISMS-Zertifizierung auf Basis "
+        "IT-Grundschutz. Zuständig für Fragen zum Managementsystem, zur Sicherheitsorganisation "
+        "und zu Rollen. Nicht zuständig für konkrete technische Maßnahmen, "
+        "Risikoanalysemethodik oder Notfallplanung."
+    ),
+    "standard_200_2": (
+        "BSI-Standard 200-2 beschreibt die IT-Grundschutz-Methodik zur Erstellung von "
+        "Sicherheitskonzepten in Behörden und Unternehmen. Inhalte: Initiierung des "
+        "Sicherheitsprozesses, drei Vorgehensweisen (Basis-Absicherung, Kern-Absicherung, "
+        "Standard-Absicherung), Strukturanalyse, Schutzbedarfsfeststellung, Modellierung "
+        "nach IT-Grundschutz, IT-Grundschutz-Check, Risikoanalyse als Bestandteil der "
+        "Standard-Absicherung, Umsetzungsplanung. Primärquelle für Fragen zur Vorgehensweise "
+        "bei der IT-Grundschutz-Einführung, zur Sicherheitskonzeption und zu Absicherungsarten. "
+        "Risikoanalyse hier: integrierter Schritt im Sicherheitskonzept — nicht als "
+        "eigenständige Methodik für erhöhten Schutzbedarf."
+    ),
+    "standard_200_3": (
+        "BSI-Standard 200-3 beschreibt eine eigenständige Methodik zur Risikoanalyse "
+        "auf Basis der elementaren Gefährdungen des IT-Grundschutzes. Anwendungsfall: "
+        "Systeme und Prozesse mit erhöhtem oder hohem Schutzbedarf, die über den "
+        "IT-Grundschutz-Check hinausgehen. Inhalte: Vorarbeiten zur Risikoanalyse, "
+        "Ermittlung und Bewertung elementarer Gefährdungen, Gefährdungsübersicht, "
+        "Risikoeinstufung (Risikoeinschätzung und Risikobewertung), "
+        "Risikobehandlungsoptionen (Reduktion, Übernahme, Vermeidung, Transfer), "
+        "Risiken unter Beobachtung, Konsolidierung des Sicherheitskonzepts, "
+        "Risikoappetit, Bezug zu ISO/IEC 31000. Zuständig für tiefergehende "
+        "Risikoanalyse-Methodik und Eintrittshäufigkeit-Schadensauswirkungs-Matrizen. "
+        "Nicht zuständig für allgemeine Sicherheitskonzept-Erstellung oder BCM."
+    ),
+    "standard_200_4": (
+        "BSI-Standard 200-4 behandelt Business Continuity Management (BCM) und "
+        "Notfallmanagement für Behörden und Unternehmen. Inhalte: BCMS-Stufenmodell "
+        "(Reaktiv-BCMS, Aufbau-BCMS, Standard-BCMS), Bewältigungsorganisation (BAO), "
+        "Stabsarbeit, BIA-Vorfilter und Business-Impact-Analyse (BIA), Identifikation "
+        "zeitkritischer Geschäftsprozesse, Wiederanlaufplanung, Notfallvorsorge, "
+        "Krisenmanagement und Krisenkommunikation, Notfallübungen, BC-Beauftragter. "
+        "Zuständig ausschließlich wenn Notfallmanagement, Betriebskontinuität, "
+        "Wiederherstellung nach Schadensereignissen oder BCM den Fragekontext bilden. "
+        "Nicht zuständig für ISMS-Aufbau, Sicherheitskonzept oder Risikoanalyse-Methodik."
+    ),
+    "kompendium": (
+        "Das IT-Grundschutz-Kompendium (Edition 2023) enthält alle IT-Grundschutz-Bausteine "
+        "mit konkreten Sicherheitsanforderungen. Struktur: Elementare Gefährdungen (G 0.1–G 0.47), "
+        "Prozess-Bausteine (ISMS, ORP, CON, OPS, DER) und System-Bausteine (APP, SYS, IND, NET, INF). "
+        "Beispiel-Bausteine: ORP.4 Identitäts- und Berechtigungsmanagement, OPS.1.1.3 "
+        "Patch- und Änderungsmanagement, APP.3.1 Webanwendungen, SYS.1.1 Allgemeiner Server, "
+        "SYS.1.8 Speicherlösungen, NET.3.2 Firewall, INF.2 Rechenzentrum. "
+        "Anforderungen sind nach Schutzbedarfsstufe klassifiziert (Basis, Standard, Erhöht). "
+        "Zuständig für Fragen zu konkreten Anforderungen, Maßnahmen, Gefährdungslagen "
+        "und Umsetzungshinweisen für bestimmte IT-Systeme, Anwendungen oder Prozesse."
+    ),
+}
+
+_profile_vectors: dict[str, list[float]] = {}
+
+
+async def _ensure_profile_vectors() -> None:
+    """Computes document profile embeddings once and caches them in-process."""
+    if _profile_vectors:
+        return
+    keys = list(DOCUMENT_PROFILES.keys())
+    vectors = await embed(list(DOCUMENT_PROFILES.values()))
+    _profile_vectors.update(zip(keys, vectors))
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+
+async def detect_document_scope(
+    query_vector: list[float],
+    threshold: float,
+    min_gap: float,
+) -> tuple[str | None, str, float, float]:
+    """Semantic document routing via profile embeddings (routing layer 2).
+
+    Returns (winner, best_candidate, best_score, gap).
+
+    winner is best_candidate when score > threshold AND gap > min_gap, else None.
+    best_candidate and best_score are always returned so the caller can detect
+    near-miss situations (plausible signal that did not clear the threshold/gap)
+    and suppress Layer 3 accordingly.
+    """
+    await _ensure_profile_vectors()
+    scores = sorted(
+        ((_cosine_similarity(query_vector, vec), doc_id) for doc_id, vec in _profile_vectors.items()),
+        reverse=True,
+    )
+    best_score, best_id = scores[0]
+    second_score = scores[1][0] if len(scores) > 1 else 0.0
+    gap = best_score - second_score
+    print(
+        f"[ROUTING] layer2_scores: {best_id}={best_score:.4f} "
+        f"gap={gap:.4f} threshold={threshold} min_gap={min_gap}"
+    )
+    winner = best_id if best_score > threshold and gap > min_gap else None
+    return winner, best_id, best_score, gap
+
+
+# ---------------------------------------------------------------------------
+# Schicht 3: Semantischer Baustein-Router
+# ---------------------------------------------------------------------------
+
+async def detect_baustein_scope(
+    query_vector: list[float],
+    threshold: float,
+    top_n: int = 2,
+) -> list[str]:
+    """Finds relevant Bausteine via embedding search on description chunks (routing layer 3).
+
+    Returns list of baustein_ids (empty when no clear match above threshold).
+    """
+    client = _get_client()
+    response = client.query_points(
+        collection_name=QDRANT_COLLECTION,
+        query=query_vector,
+        query_filter=Filter(must=[
+            FieldCondition(key="doc_type", match=MatchValue(value="baustein_beschreibung")),
+        ]),
+        limit=top_n,
+        score_threshold=threshold,
+        with_payload=True,
+    )
+    bausteine: list[str] = []
+    for point in (response.points or []):
+        bid = (point.payload or {}).get("baustein_id")
+        if isinstance(bid, str) and bid:
+            bausteine.append(bid)
+    if bausteine:
+        print(f"[ROUTING] layer3_baustein: {bausteine}")
+    return bausteine
+
+
+def _qdrant_query(
+    vector: list[float],
+    k: int,
+    *,
+    source_scope: str | None = None,
+    standard_id: str | None = None,
+    baustein_id: str | None = None,
+    schicht_id: str | None = None,
+    include_vectors: bool = False,
+) -> list[Any]:
+    """Execute a single Qdrant vector search with optional hard filters.
+
+    All filters are combined as AND (must). Returns raw ScoredPoint objects
+    so the caller can merge multiple result sets before converting to RagResult.
+    """
+    must: list[FieldCondition] = []
+    if source_scope:
+        must.append(FieldCondition(key="source_scope", match=MatchValue(value=source_scope)))
+    if standard_id:
+        must.append(FieldCondition(key="standard_id", match=MatchValue(value=standard_id)))
+    if baustein_id:
+        must.append(FieldCondition(key="baustein_id", match=MatchValue(value=baustein_id)))
+    if schicht_id:
+        must.append(FieldCondition(key="schicht_id", match=MatchValue(value=schicht_id)))
+
+    # A hard standard_id/baustein_id/schicht_id filter already guarantees scope
+    # correctness (Qdrant only returns points from that exact standard/Baustein/
+    # Schicht) — a lower score_threshold here only affects recall *within* that
+    # already-correct scope, not precision across the wider corpus. Anforderung
+    # chunks are terse imperative BSI clauses that score systematically lower
+    # against a natural-language question than descriptive prose chunks, so the
+    # default threshold can starve a scoped query of any anforderung hits.
+    threshold = SCORE_THRESHOLD_SCOPED if (standard_id or baustein_id or schicht_id) else SCORE_THRESHOLD
+
+    response = _get_client().query_points(
+        collection_name=QDRANT_COLLECTION,
+        query=vector,
+        limit=k,
+        score_threshold=threshold,
+        with_payload=True,
+        with_vectors=include_vectors,
+        query_filter=Filter(must=must) if must else None,
+    )
+    return list(response.points or [])
 
 
 async def retrieve(
@@ -253,19 +498,65 @@ async def retrieve(
     Returns:
         List of RagResult objects
     """
-    client = _get_client()
-    vector = (await embed([query]))[0]
+    embed_query = (await _generate_hyde_query(query)) if HYDE_ENABLED else query
+    vector = (await embed([embed_query]))[0]
+
+    # Routing hints. Layer 2/3 are additive blended supplements, never exclusive
+    # filters, since they involve genuine ambiguity (embedding-threshold match) and
+    # a question can legitimately span multiple sources (e.g. "ISMS-Prinzipien" →
+    # 200-1 text + ISMS.1 Anforderungen — excluding either would be wrong). Layer 1
+    # is different: an explicit, literal standard mention ("BSI-Standard 200-2") has
+    # no ambiguity to hedge against, so it is applied as a hard filter on the main
+    # query — same as an LLM-set standard_id. Without this, an unfiltered main query
+    # can still surface generically high-scoring but topically unrelated chunks from
+    # other standards that outscore and silently displace the correct standard's
+    # content even after boosting (observed: "BSI-Standard 200-2" question, only 6
+    # of 12 final hits were actually standard_200_2 despite Layer 1 firing).
+    _routing_standard_id: str | None = None
+    _routing_baustein_id: str | None = None
+    _exclusive_standard_id: str | None = None
+
+    if DOC_ROUTING_ENABLED and standard_id is None and baustein_id is None:
+        # Routing always classifies on the raw query embedding, never on the HyDE
+        # paraphrase. HyDE is a sampled LLM completion and can drift into a neighboring
+        # topic's vocabulary (observed case: an "ISMS-Aufbau" question generated a HyDE
+        # paragraph about "Schutzbedarfs-/Risikoanalyse", i.e. 200-2/200-3 vocabulary,
+        # which then skewed the document-router score toward the wrong standard). Feeding
+        # that drifted vector into the router would propagate the error into the scope
+        # decision instead of correcting it. This decouples HYDE_ENABLED from routing
+        # entirely: HyDE only ever affects the retrieval vector used for chunk search
+        # below, never which document/Baustein gets detected.
+        routing_vector = (await embed([query]))[0] if HYDE_ENABLED else vector
+
+        # Layer 1: regex — explicit standard reference in query text → exclusive filter
+        detected_std = detect_explicit_standard(query)
+        if detected_std:
+            _exclusive_standard_id = detected_std
+            print(f"[ROUTING] layer1_regex → exclusive standard_id={detected_std}")
+        else:
+            # Layer 2: semantic document profile match → boost only
+            detected_doc, _l2_best, _l2_score, _l2_gap = await detect_document_scope(
+                query_vector=routing_vector,
+                threshold=DOC_ROUTING_THRESHOLD,
+                min_gap=DOC_ROUTING_GAP,
+            )
+            if detected_doc and detected_doc != "kompendium":
+                _routing_standard_id = detected_doc
+                print(f"[ROUTING] layer2_semantic → boost standard_id={detected_doc}")
+
+        # Layer 3: always runs alongside Layer 1/2 — not as fallback.
+        # A question can span both a BSI standard and a Kompendium Baustein
+        # (e.g. "ISMS-Prinzipien" → 200-1 text + ISMS.1 Anforderungen).
+        if BAUSTEIN_ROUTING_ENABLED:
+            detected_bausteine = await detect_baustein_scope(
+                query_vector=routing_vector,
+                threshold=BAUSTEIN_ROUTING_THRESHOLD,
+            )
+            if detected_bausteine:
+                _routing_baustein_id = detected_bausteine[0]
+                print(f"[ROUTING] layer3_baustein → boost baustein_id={_routing_baustein_id}")
+
     k = top_k or TOP_K
-    must: list[FieldCondition] = []
-    if source_scope:
-        must.append(FieldCondition(key="source_scope", match=MatchValue(value=source_scope)))
-    if standard_id:
-        must.append(FieldCondition(key="standard_id", match=MatchValue(value=standard_id)))
-    if baustein_id:
-        must.append(FieldCondition(key="baustein_id", match=MatchValue(value=baustein_id)))
-    if schicht_id:
-        must.append(FieldCondition(key="schicht_id", match=MatchValue(value=schicht_id)))
-    query_filter = Filter(must=must) if must else None
     print(
         "[DEBUG] retrieve",
         {
@@ -274,30 +565,78 @@ async def retrieve(
             "standard_id": standard_id,
             "baustein_id": baustein_id,
             "schicht_id": schicht_id,
+            "_exclusive_standard_id": _exclusive_standard_id,
+            "_routing_standard_id": _routing_standard_id,
+            "_routing_baustein_id": _routing_baustein_id,
         },
     )
-    response = client.query_points(
-        collection_name=QDRANT_COLLECTION,
-        query=vector,
-        limit=k,
-        score_threshold=SCORE_THRESHOLD,
-        with_payload=True,
-        with_vectors=include_vectors,
-        query_filter=query_filter,
+
+    # Main retrieval — exclusive filters: explicit LLM-set params take precedence,
+    # Layer 1's exclusive standard_id (explicit literal mention) applies otherwise.
+    points = _qdrant_query(
+        vector, k,
+        source_scope=source_scope,
+        standard_id=standard_id or _exclusive_standard_id,
+        baustein_id=baustein_id,
+        schicht_id=schicht_id,
+        include_vectors=include_vectors,
     )
-    points = list(response.points or [])
-    if not points and (source_scope or standard_id):
-        # Compatibility fallback for older collections without new metadata fields.
+
+    # Fallback: exclusive filter yielded nothing (stale metadata in older collections)
+    if not points and (source_scope or standard_id or _exclusive_standard_id):
         print("[WARN] filtered_retrieval_empty_fallback_unfiltered", {"top_k": k})
-        response = client.query_points(
-            collection_name=QDRANT_COLLECTION,
-            query=vector,
-            limit=k,
-            score_threshold=SCORE_THRESHOLD,
-            with_payload=True,
-            with_vectors=include_vectors,
+        points = _qdrant_query(vector, k, include_vectors=include_vectors)
+
+    # Blended supplements: inject routing-hint chunks without displacing main results.
+    # Each supplement is deduplicated against already-seen point IDs. Up to boost_k
+    # items per source get GUARANTEED slots (reserved, not score-competed) instead of
+    # a pure score-sort-and-trim: the unfiltered main pool can contain generically
+    # high-scoring but topically unrelated chunks (e.g. boilerplate sections shared
+    # across BSI standards) that would otherwise outscore and silently displace the
+    # exact routing target the boost was meant to guarantee — observed repeatedly in
+    # TASK_13 testing (e.g. a clearly-won standard_200_1 match still ended up only 3
+    # of 10 final hits after a plain score-sort-and-trim merge).
+    seen_ids: set[Any] = {p.id for p in points}
+    boost_groups: list[list[Any]] = []
+    boost_k = max(k // 2, 3)
+
+    if _routing_standard_id:
+        std_pts = _qdrant_query(
+            vector, boost_k,
+            source_scope=source_scope,
+            standard_id=_routing_standard_id,
+            include_vectors=include_vectors,
         )
-        points = list(response.points or [])
+        new = [p for p in std_pts if p.id not in seen_ids]
+        if new:
+            print(f"[ROUTING] blend_standard: +{len(new)} from {_routing_standard_id}")
+            seen_ids.update(p.id for p in new)
+            boost_groups.append(new)
+
+    if _routing_baustein_id and baustein_id is None:
+        bas_pts = _qdrant_query(
+            vector, boost_k,
+            source_scope=source_scope,
+            baustein_id=_routing_baustein_id,
+            include_vectors=include_vectors,
+        )
+        new = [p for p in bas_pts if p.id not in seen_ids]
+        if new:
+            print(f"[ROUTING] blend_baustein: +{len(new)} from {_routing_baustein_id}")
+            seen_ids.update(p.id for p in new)
+            boost_groups.append(new)
+
+    if boost_groups:
+        guaranteed: list[Any] = []
+        for group in boost_groups:
+            guaranteed.extend(sorted(group, key=lambda p: p.score, reverse=True)[:boost_k])
+        # Safety cap: with a small k and both boosts firing simultaneously,
+        # guaranteed slots alone could otherwise exceed k.
+        guaranteed = sorted(guaranteed, key=lambda p: p.score, reverse=True)[:k]
+        guaranteed_ids = {p.id for p in guaranteed}
+        remaining_pool = [p for p in points if p.id not in guaranteed_ids]
+        remaining = sorted(remaining_pool, key=lambda p: p.score, reverse=True)[: max(k - len(guaranteed), 0)]
+        points = sorted(guaranteed + remaining, key=lambda p: p.score, reverse=True)
 
     hits: list[RagResult] = []
     for hit in points:

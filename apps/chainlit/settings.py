@@ -35,9 +35,21 @@ TOP_K = int(_getenv("TOP_K", "5"))
 MAX_TOP_K = int(_getenv("MAX_TOP_K", str(TOP_K)))
 MAX_SOURCE_LINKS = int(_getenv("MAX_SOURCE_LINKS", "8"))
 SCORE_THRESHOLD = float(_getenv("SCORE_THRESHOLD", "0.0"))
+# Lower threshold used when a hard standard_id/baustein_id/schicht_id filter is
+# active: scope correctness is already guaranteed by the filter, so a lower
+# score only affects recall within that scope, not precision across the corpus.
+SCORE_THRESHOLD_SCOPED = float(_getenv("SCORE_THRESHOLD_SCOPED", "0.25"))
 STREAMING_ENABLED = (_getenv("STREAMING_ENABLED", "false") or "false").lower() == "true"
 STREAMING_DOUBLE_PASS = (_getenv("STREAMING_DOUBLE_PASS", "false") or "false").lower() == "true"
 CITATION_VALIDATION = (_getenv("CITATION_VALIDATION", "false") or "false").lower() == "true"
+HYDE_ENABLED = (_getenv("HYDE_ENABLED", "false") or "false").lower() == "true"
+
+# TASK_13: Pre-retrieval routing
+DOC_ROUTING_ENABLED = (_getenv("DOC_ROUTING_ENABLED", "false") or "false").lower() == "true"
+BAUSTEIN_ROUTING_ENABLED = (_getenv("BAUSTEIN_ROUTING_ENABLED", "false") or "false").lower() == "true"
+DOC_ROUTING_THRESHOLD = float(_getenv("DOC_ROUTING_THRESHOLD", "0.82"))
+DOC_ROUTING_GAP = float(_getenv("DOC_ROUTING_GAP", "0.02"))
+BAUSTEIN_ROUTING_THRESHOLD = float(_getenv("BAUSTEIN_ROUTING_THRESHOLD", "0.70"))
 
 SYSTEM_PROMPT_PATH = Path(
     _getenv(

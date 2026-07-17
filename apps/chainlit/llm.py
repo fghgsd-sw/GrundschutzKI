@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import litellm
 
@@ -32,7 +32,56 @@ async def chat(
         payload["tools"] = tools
         if tool_choice:
             payload["tool_choice"] = tool_choice
-    return await litellm.acompletion(**payload, num_retries=3, timeout=60)
+    return await litellm.acompletion(**payload, num_retries=1, timeout=45)
+
+
+async def stream_or_collect(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | None = "auto",
+    on_content_token: Callable[[str], Awaitable[None]] | None = None,
+) -> tuple[str | None, Any]:
+    """Stream a chat call and detect whether the response is content or tool calls.
+
+    Returns (full_content, None) for content responses — each token was passed to
+    on_content_token as it arrived.
+    Returns (None, message_obj) for tool-call responses — collected silently.
+    """
+    payload: dict[str, Any] = {
+        "model": CHAT_MODEL,
+        "messages": messages,
+        "temperature": CHAT_TEMPERATURE,
+        "stream": True,
+        **_client_args(),
+    }
+    if tools:
+        payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
+
+    stream = await litellm.acompletion(**payload, timeout=90)
+
+    chunks: list[Any] = []
+    full_content = ""
+    has_tool_calls = False
+
+    async for chunk in stream:
+        chunks.append(chunk)
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if getattr(delta, "tool_calls", None):
+            has_tool_calls = True
+        if not has_tool_calls and delta.content:
+            full_content += delta.content
+            if on_content_token:
+                await on_content_token(delta.content)
+
+    if has_tool_calls:
+        full_response = litellm.stream_chunk_builder(chunks, messages=messages)
+        return None, full_response.choices[0].message
+
+    return full_content, None
 
 
 async def stream_chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, tool_choice: str | None = None):

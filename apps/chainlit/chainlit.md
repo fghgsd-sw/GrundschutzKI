@@ -1,12 +1,15 @@
 # Grundschutz-KI
 
-Grundschutz-KI beantwortet Fragen zur Informationssicherheit auf Basis des IT-Grundschutz-Kompendiums und der 200-n Standards des BSI. Jede Antwort wird mit den zugrunde liegenden Fundstellen belegt.
+Grundschutz-KI beantwortet Ihre Fragen zur Informationssicherheit auf Basis des IT-Grundschutz-Kompendiums, der 200-n Standards des BSI und des von Ihnen ggf. zusätzlich mitgegebenen Kontexts. Jede Antwort wird mit den zugrunde liegenden Fundstellen belegt.
+
+Grundschutz-KI erstellt zudem Anschlussfragen, die Ihnen  zusätzliche Perspektiven auf Ihr Thema liefern sollen.
+Bewerten Sie, wie gut das Ganze für Sie funktiert.
 
 ---
 
 ## Hinweise zum Datenschutz
 
-Sie stimmen mit Ihrer Registrierung der Teilnahme an einer Evaluierung der Anwendung Grundschutz-KI zu. Im Evaluierungszeitraum vom 01. bis 22.07.2026 werden nur solche Daten ausgewertet, die Sie aktiv als Feedback (Thumbs up/down + Kommentar) geben. Die Auswertung erfolgt anonymisiert.
+Sie stimmen mit Ihrer Registrierung der Teilnahme an einer Evaluierung der Anwendung Grundschutz-KI zu. Im Evaluierungszeitraum vom 20. Juli bis 08. August 2026 werden nur solche Daten ausgewertet, die Sie aktiv als Feedback (Thumbs up/down + Kommentar) geben. Die Auswertung erfolgt anonymisiert.
 
 Chatverläufe werden in der Anwendung gespeichert und für die benutzerspezifische Beantwortung verwendet. Sie können Chatverläufe jederzeit selbständig löschen. Nach Abschluss der Evaluierungsphase wird das System zurückgesetzt und alle benutzerbezogenen Daten werden gelöscht.
 
