@@ -15,4 +15,8 @@ dependencies = [
     "pypdfium2>=4.0.0",
     "numpy>=1.26.0",
     "aiosmtplib>=3.0.0",
+    # litellm's proxy/MCP request-handling code imports this internally but
+    # does not declare it as its own dependency — only present in dev by
+    # accident via unrelated packages (dspy, gradio, langgraph-sdk).
+    "orjson>=3.10.0",
 ]
