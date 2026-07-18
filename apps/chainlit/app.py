@@ -2658,7 +2658,7 @@ async def on_app_startup() -> None:
                 content="<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
                 "<h2>Link ungültig oder bereits verwendet</h2>"
                 "<p>Der Bestätigungslink ist ungültig oder deine E-Mail wurde bereits bestätigt.</p>"
-                f'<p><a href="{APP_BASE_URL}">Zum Login</a></p>'
+                '<p><a href="/">Zum Login</a></p>'
                 "</body></html>",
                 status_code=400,
             )
@@ -2667,7 +2667,7 @@ async def on_app_startup() -> None:
             content="<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
             f"<h2>E-Mail bestätigt!</h2>"
             f"<p>Hallo <b>{escaped_identifier}</b>, dein Konto ist jetzt aktiv.</p>"
-            f'<p><a href="{APP_BASE_URL}">Jetzt einloggen</a></p>'
+            '<p><a href="/">Jetzt einloggen</a></p>'
             "</body></html>",
             status_code=200,
         )
@@ -2720,6 +2720,9 @@ async def on_app_startup() -> None:
         button.primary:hover { background: var(--accent-hover); }
         button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
         button.secondary:hover { border-color: var(--accent); color: var(--accent); }
+        .cancel-link { display: block; margin-top: 14px; font-size: 0.9em; color: var(--muted);
+            text-decoration: none; }
+        .cancel-link:hover { color: var(--accent); text-decoration: underline; }
     """
 
     def _render_feedback_form(draft: dict[str, Any] | None) -> str:
@@ -2809,6 +2812,7 @@ async def on_app_startup() -> None:
                     <button type="submit" formaction="/feedback/submit" class="primary">Absenden</button>
                 </div>
             </form>
+            <a href="/" class="cancel-link">Ohne zu speichern zurück zur Anwendung</a>
             </body></html>
         """
 
@@ -2862,7 +2866,7 @@ async def on_app_startup() -> None:
             <h2>{heading}</h2>
             <p>{body}</p>
             <p><a href="/feedback" style="color:var(--accent)">Zurück zum Formular</a>
-               · <a href="{APP_BASE_URL}" style="color:var(--accent)">Zurück zur Anwendung</a></p>
+               · <a href="/" style="color:var(--accent)">Zurück zur Anwendung</a></p>
             </body></html>
         """)
 
