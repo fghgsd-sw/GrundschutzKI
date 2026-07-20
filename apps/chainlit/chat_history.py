@@ -84,7 +84,7 @@ def init_chat_db(db_path: Path) -> None:
             )
         if "personalization_enabled" not in columns:
             conn.execute(
-                "ALTER TABLE user_profiles ADD COLUMN personalization_enabled INTEGER NOT NULL DEFAULT 1"
+                "ALTER TABLE user_profiles ADD COLUMN personalization_enabled INTEGER NOT NULL DEFAULT 0"
             )
         conn.commit()
 
@@ -377,7 +377,7 @@ def get_user_profile(db_path: Path, user_id: str) -> dict[str, Any] | None:
             item[field.replace("_json", "")] = []
         item.pop(field, None)
     # Convert personalization_enabled from integer to bool
-    item["personalization_enabled"] = bool(item.get("personalization_enabled", 1))
+    item["personalization_enabled"] = bool(item.get("personalization_enabled", 0))
     return item
 
 
@@ -451,7 +451,7 @@ def upsert_user_profile(
                     message_count or 0,
                     json.dumps(keywords or [], ensure_ascii=False),
                     custom_prompt if custom_prompt is not _SENTINEL else None,
-                    1 if personalization_enabled is None or personalization_enabled else 0,
+                    1 if personalization_enabled else 0,
                     now,
                     now,
                 ),
