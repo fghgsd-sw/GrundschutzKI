@@ -81,7 +81,7 @@ STARTER_QUESTIONS = _getenv_list(
     "STARTER_QUESTIONS",
     default=[
         "Was ist der Unterschied zwischen Prozess- und Systembausteinen?",
-        "Welche Schritte umfasst die Basis-Absicherung nach BSI-Standard 200-2?",
+        "Welche Form der Absicherung sollte ich als kleines/mittelständisches Unternehmen wählen?",
         "Wie müssen Passwörter bei der Authentisierung am Webserver gesichert werden?",
         "Was sind die Kernabsicherung und die Standard-Absicherung?",
         "Welche Rolle spielt der IT-Sicherheitsbeauftragte im BSI-Grundschutz?",
@@ -91,7 +91,7 @@ STARTER_QUESTIONS = _getenv_list(
         "Wie funktioniert die Risikoanalyse nach BSI-Standard 200-3?",
         "Was versteht man unter dem Schichtenmodell im IT-Grundschutz?",
         "Welche Anforderungen stellt der Baustein APP.1.1 Office-Produkte?",
-        "Was sind die Phasen des BSI-Sicherheitsprozesses?",
+        "Was sind die Phasen bei der Erstellung eines Informationssicherheitskonzepts?",
     ],
 )
 STARTER_QUESTIONS_COUNT = int(_getenv("STARTER_QUESTIONS_COUNT", "3"))
