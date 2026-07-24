@@ -2735,7 +2735,7 @@ async def on_app_startup() -> None:
 
         role_options = "\n".join(
             f'<option value="{html.escape(name)}" {"selected" if d.get("role") == name else ""}>{html.escape(name)}</option>'
-            for name in profile_names
+            for name in [*profile_names, "keine spezifische Rolle"]
         )
         feature_options = "\n".join(
             f'<option value="{value}" {"selected" if d.get("most_helpful_feature") == value else ""}>{label}</option>'

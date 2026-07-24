@@ -27,11 +27,11 @@ Im Chat **hochgeladene Dateien** werden nicht dauerhaft gespeichert, sondern nac
 
 Grundschutz-KI befindet sich in der Evaluierungsphase. Folgende Punkte sind uns bekannt und bewusst Gegenstand der Evaluierung — Ihr Feedback dazu ist besonders wertvoll:
 
-- **Quellenangaben:** Liegen mehrere Anforderungen eines Bausteins eng beieinander (z. B. auf derselben Seite), kann die angegebene Fundstelle in Einzelfällen nicht exakt zur jeweiligen Aussage passen, auch wenn der inhaltliche Kern stimmt. Bei Unsicherheit lohnt ein Blick auf die verlinkte PDF-Seite.
+- **Quellenangaben passen nicht immer zur Aussage:** Das ist kein seltenes Randphänomen, sondern ein bekannter, häufigerer Schwachpunkt, den wir aktiv untersuchen. Typische Ursache: Das Modell zitiert dieselbe Fundstelle wiederholt für mehrere, auch inhaltlich unterschiedliche Aussagen weiter — als eine Art „Sammelquelle" —, obwohl sie nur einen Teil davon tatsächlich belegt. Das kommt insbesondere bei Antworten mit mehreren Aufzählungspunkten vor. Ein Blick auf die verlinkte PDF-Seite zeigt, ob die Fundstelle wirklich zur jeweiligen Einzelaussage passt.
 - **Suchtreffer:** Die Suche nach passenden Stellen im Kompendium erfolgt über eine semantische Ähnlichkeitssuche. Bei sehr spezifischen Fachbegriffen kann es vorkommen, dass die treffendste Stelle nicht gefunden wird und die Antwort dadurch ungenauer ausfällt.
-- **Sehr breite Aufzählungsfragen** (z. B. „Welche Anforderungen stellt Baustein X insgesamt?"): Bei Fragen, die viele Einzelanforderungen eines Bausteins gleichzeitig abdecken sollen, kann es vorkommen, dass eine Anforderungs-Bezeichnung nicht exakt zum tatsächlichen Inhalt passt. Konkretere Teilfragen (z. B. zu einem einzelnen Aspekt) liefern erfahrungsgemäß zuverlässigere Ergebnisse als eine vollständige Auflistung in einer Antwort.
+- **Sehr breite Aufzählungsfragen** (z. B. „Welche Anforderungen stellt Baustein X insgesamt?"): Hier tritt das Sammelquellen-Problem von oben besonders häufig auf, da viele Einzelanforderungen gleichzeitig abgedeckt werden sollen. Konkretere Teilfragen (z. B. zu einem einzelnen Aspekt) liefern erfahrungsgemäß zuverlässigere Ergebnisse als eine vollständige Auflistung in einer Antwort.
 
-Diese Fälle lassen sich gut über 👎 mit kurzem Kommentar oder das Feedback-Formular melden.
+**Wir sind hier konkret auf Ihre Mitarbeit angewiesen:** Diese Fehler automatisiert zu erkennen ist nur begrenzt möglich — am wertvollsten ist Ihre Rückmeldung, wenn Sie eine unpassende Fundstelle bemerken. Melden Sie das bitte über 👎 mit kurzem Kommentar, möglichst mit Angabe, **welcher konkrete Aufzählungspunkt bzw. welche Aussage** betroffen ist. Nur so lassen sich diese Fälle den jeweiligen Fragen zuordnen und gezielt nachvollziehen.
 
 ### Grundfunktionen
 
