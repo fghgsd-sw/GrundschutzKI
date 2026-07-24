@@ -11,7 +11,7 @@ Grundschutz-KI erstellt zudem Anschlussfragen, die Ihnen  zusätzliche Perspekti
 
 ## Hinweise zum Datenschutz
 
-Sie stimmen mit Ihrer Registrierung der Teilnahme an einer Evaluierung der Anwendung Grundschutz-KI zu. Im Evaluierungszeitraum vom 20. Juli bis 08. August 2026 werden nur solche Daten ausgewertet, die Sie aktiv als Feedback (Thumbs up/down + Kommentar) geben. Die Auswertung erfolgt anonymisiert.
+Sie stimmen mit Ihrer Registrierung der Teilnahme an einer Evaluierung der Anwendung Grundschutz-KI zu. Im Evaluierungszeitraum vom 20. Juli bis 14. August 2026 werden nur solche Daten ausgewertet, die Sie aktiv als Feedback (Thumbs up/down + Kommentar) geben. Die Auswertung erfolgt anonymisiert.
 
 Chatverläufe werden in der Anwendung gespeichert und für die benutzerspezifische Beantwortung verwendet. Sie können Chatverläufe jederzeit selbständig löschen. Nach Abschluss der Evaluierungsphase wird das System zurückgesetzt und alle benutzerbezogenen Daten werden gelöscht.
 
@@ -32,6 +32,10 @@ Grundschutz-KI befindet sich in der Evaluierungsphase. Folgende Punkte sind uns 
 - **Sehr breite Aufzählungsfragen** (z. B. „Welche Anforderungen stellt Baustein X insgesamt?"): Hier tritt das Sammelquellen-Problem von oben besonders häufig auf, da viele Einzelanforderungen gleichzeitig abgedeckt werden sollen. Konkretere Teilfragen (z. B. zu einem einzelnen Aspekt) liefern erfahrungsgemäß zuverlässigere Ergebnisse als eine vollständige Auflistung in einer Antwort.
 
 **Wir sind hier konkret auf Ihre Mitarbeit angewiesen:** Diese Fehler automatisiert zu erkennen ist nur begrenzt möglich — am wertvollsten ist Ihre Rückmeldung, wenn Sie eine unpassende Fundstelle bemerken. Melden Sie das bitte über 👎 mit kurzem Kommentar, möglichst mit Angabe, **welcher konkrete Aufzählungspunkt bzw. welche Aussage** betroffen ist. Nur so lassen sich diese Fälle den jeweiligen Fragen zuordnen und gezielt nachvollziehen.
+
+**Vielen Dank an dieser Stelle schon einmal für Ihre Mitwirkung.🥇**
+
+---
 
 ### Grundfunktionen
 
