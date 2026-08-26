@@ -1,0 +1,609 @@
+[
+  {
+    "label": "einfach",
+    "question": "Wie sollten Fehlermeldungen auf einem Webserver gestaltet sein?",
+    "checked": 4,
+    "unsupported": 1,
+    "mismatches": [
+      {
+        "alias": "Quelle: APP.3.2.A4 (S.397)",
+        "claim": "APP.3.2.A4 Protokollierung von Ereignissen (B) – Alle Fehlermeldungen müssen protokolliert werden, damit sie regelmäßig ausgewertet und Schwachstellen erkannt werden können",
+        "supported": false,
+        "grund": "Der Quelltext fordert das Protokollieren allgemeiner Fehlermeldungen, nicht explizit aller Fehlermeldungen; damit wird die Behauptung nicht eindeutig belegt."
+      }
+    ],
+    "modal_verb_checked": 2,
+    "modal_verb_mismatches": [
+      {
+        "alias": "Quelle: APP.3.2.A12 (S.398)",
+        "claim": "APP.3.2.A12 Geeigneter Umgang mit Fehlern und Fehlermeldungen (B) – Fehlermeldungen dürfen weder den Produktnamen noch die Versionsnummer des Webservers preisgeben und müssen allgemein gehalten sein, damit keine System‑ oder Konfigurationsdetails ersichtlich werden",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      }
+    ]
+  },
+  {
+    "label": "einfach",
+    "question": "Warum müssen Verstöße gegen Anforderungen korrigiert werden?",
+    "checked": 5,
+    "unsupported": 0,
+    "mismatches": [],
+    "modal_verb_checked": 2,
+    "modal_verb_mismatches": [
+      {
+        "alias": "Quelle: OPS.3.2.A9 (S.291)",
+        "claim": "bei Outsourcing‑Verträgen unzureichende Sicherheitsanforderungen die Schutzbedarfe nicht decken; diese müssen nachgebessert werden",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      },
+      {
+        "alias": "Quelle: SYS.3.2.2.A23 (S.607)",
+        "claim": "Manipulationen oder Regelverstöße unentdeckt bleiben können; ein Alarm an das Sicherheitsmanagement ist bei Verdacht auf Verstöße vorgesehen",
+        "claim_groups": [
+          "option"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      }
+    ]
+  },
+  {
+    "label": "einfach",
+    "question": "Was muss in der Betriebsdokumentation enthalten sein?",
+    "checked": 5,
+    "unsupported": 3,
+    "mismatches": [
+      {
+        "alias": "Quelle: NET.3.2.A14 (S.726)",
+        "claim": "Alle betrieblichen Aufgaben und Änderungen (z. B. Konfigurations‑ und sicherheitsrelevante Änderungen) MÜSSEN nachvollziehbar dokumentiert werden, wobei „Wer?“, „Wann?“ und „Was?“ festgehalten werden",
+        "supported": false,
+        "grund": "Source verlangt Dokumentation, nennt jedoch nicht explizit die Felder Wer?, Wann?, Was?."
+      },
+      {
+        "alias": "Quelle: SYS.1.1.A21 (S.488)",
+        "claim": "Wo möglich, SOLLTEN Vorgänge automatisch erfasst werden; alle automatisierten Aufzeichnungen MÜSSEN ebenfalls dokumentiert sein",
+        "supported": false,
+        "grund": "Source sagt, dass alles, was automatisch dokumentiert werden kann, automatisch dokumentiert werden soll, enthält aber keine Pflicht, dass automatisierte Aufzeichnungen dokumentiert sein müssen."
+      },
+      {
+        "alias": "Quelle: SYS.2.1.A40 (S.559)",
+        "claim": "Die Dokumentation MUSS vor unbefugtem Zugriff und Verlust geschützt werden",
+        "supported": false,
+        "grund": "Source verwendet 'sollte' statt 'muss' für den Schutz vor unbefugtem Zugriff und Verlust."
+      }
+    ],
+    "modal_verb_checked": 5,
+    "modal_verb_mismatches": [
+      {
+        "alias": "Quelle: SYS.2.1.A40 (S.559)",
+        "claim": "Die Dokumentation MUSS vor unbefugtem Zugriff und Verlust geschützt werden",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      }
+    ]
+  },
+  {
+    "label": "einfach",
+    "question": "Warum müssen Benutzendenkennungen eindeutig Personen zugeordnet werden?",
+    "checked": 4,
+    "unsupported": 1,
+    "mismatches": [
+      {
+        "alias": "Quelle: ORP.4.A2 (S.125)",
+        "claim": "Durch die eindeutige Zuordnung lässt sich bei personellen Veränderungen sicherstellen, dass nicht mehr benötigte Konten entfernt werden und keine alten Rechte fälschlicherweise einer anderen Person zugewiesen werden",
+        "supported": false,
+        "grund": "Quelle fordert das Entfernen nicht mehr benötigter Konten, erwähnt aber nicht, dass eindeutige Zuordnung Verwechslungen verhindert"
+      }
+    ],
+    "modal_verb_checked": 3,
+    "modal_verb_mismatches": [
+      {
+        "alias": "Quelle: SYS.1.3.A2 (S.507)",
+        "claim": "Jeder Login‑Name, jede User‑ID (UID) und jede Gruppen‑ID (GID) DARF NUR einmal vorkommen, damit ein Konto eindeutig einer Person zugeordnet werden kann und keine Verwechslungen zwischen unterschiedlichen Benutzenden entstehen",
+        "claim_groups": [
+          "option"
+        ],
+        "source_groups": [
+          "empfehlung",
+          "pflicht"
+        ],
+        "source_modal_verben": [
+          "MUSS",
+          "SOLLTE",
+          "DARF NUR"
+        ],
+        "matches": false
+      }
+    ]
+  },
+  {
+    "label": "einfach",
+    "question": "Muss es feste Ansprechpersonen für Sicherheitsfragen geben?",
+    "checked": 2,
+    "unsupported": 0,
+    "mismatches": [],
+    "modal_verb_checked": 2,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "einfach",
+    "question": "Muss es eine zentrale Stelle für Outsourcing geben?",
+    "checked": 2,
+    "unsupported": 0,
+    "mismatches": [],
+    "modal_verb_checked": 0,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "einfach",
+    "question": "Welche organisatorischen Rollen sind für Compliance Management vorgesehen?",
+    "checked": 2,
+    "unsupported": 0,
+    "mismatches": [],
+    "modal_verb_checked": 0,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "einfach",
+    "question": "Welche Sicherheitsmaßnahmen werden zur Einrichtung eines RDP Zugriff auf Windows Server benötigt?",
+    "checked": 5,
+    "unsupported": 3,
+    "mismatches": [
+      {
+        "alias": "Quelle: SYS.1.2.3.A6 (S.501)",
+        "claim": "Die lokale Firewall muss so konfiguriert werden, dass nur autorisierte Quellen den RDP‑Port erreichen können",
+        "supported": false,
+        "grund": "Der Quelltext spricht nur von einer Empfehlung (\"SOLLTEN\"), nicht von einer zwingenden Anforderung („muss\")."
+      },
+      {
+        "alias": "Quelle: SYS.1.2.3.A6 (S.501)",
+        "claim": "Eine dedizierte Gruppe von berechtigten Benutzenden ist anzulegen und ausschließlich diesen wird das Recht zum Remote‑Desktop‑Zugriff zugewiesen",
+        "supported": false,
+        "grund": "Der Text formuliert die Gruppe als Empfehlung (\"SOLLTE\"), nicht als festgelegte Vorgabe."
+      },
+      {
+        "alias": "Quelle: SYS.1.2.3.A6 (S.501)",
+        "claim": "Eingesetzte kryptografische Protokolle und Algorithmen müssen den internen Sicherheitsvorgaben entsprechen und unsichere Komfortfunktionen (Zwischenablage, Drucker‑ und Medienumleitung) nur bei nachgewiesenem Schutzbedarf zulassen oder komplett deaktivieren",
+        "supported": false,
+        "grund": "Der Quelltext behandelt nur Komfortfunktionen, erwähnt jedoch keine Vorgaben zu kryptografischen Protokollen/Algorithmen."
+      }
+    ],
+    "modal_verb_checked": 3,
+    "modal_verb_mismatches": [
+      {
+        "alias": "Quelle: SYS.1.2.3.A6 (S.501)",
+        "claim": "Die lokale Firewall muss so konfiguriert werden, dass nur autorisierte Quellen den RDP‑Port erreichen können",
+        "claim_groups": [
+          "option",
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      },
+      {
+        "alias": "Quelle: SYS.1.2.3.A6 (S.501)",
+        "claim": "Eingesetzte kryptografische Protokolle und Algorithmen müssen den internen Sicherheitsvorgaben entsprechen und unsichere Komfortfunktionen (Zwischenablage, Drucker‑ und Medienumleitung) nur bei nachgewiesenem Schutzbedarf zulassen oder komplett deaktivieren",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      }
+    ]
+  },
+  {
+    "label": "einfach",
+    "question": "Welche Sicherheitsprüfungen für Serversysteme sollte ich durchführen?",
+    "checked": 5,
+    "unsupported": 5,
+    "mismatches": [
+      {
+        "alias": "Quelle: SYS.1.1.A24 (S.489)",
+        "claim": "SYS.1.1.A24 Sicherheitsprüfungen für Server (B) MÜSSEN regelmäßige Sicherheitstests durchgeführt werden, um die Einhaltung aller Vorgaben zu prüfen und Schwachstellen zu identifizieren",
+        "supported": false,
+        "grund": "Der Quelltext spricht von „SOLLEN“ statt von verpflichtenden „MÜSSEN“ – die Aussage ist nur eine Empfehlung, nicht eine verbindliche Anforderung."
+      },
+      {
+        "alias": "Quelle: SYS.1.1.A16 (S.488)",
+        "claim": "SYS.1.1.A16 Sichere Installation und Grundkonfiguration von Servern (B) MÜSSEN vor der Inbetriebnahme eine vollständige Installation und Konfiguration in einer getrennten Umgebung erfolgen und anschließend regelmäßig überprüft werden",
+        "supported": false,
+        "grund": "Im Quelltext wird nur von „SOLLEN“ gesprochen und es fehlt die explizite Forderung nach regelmäßiger Überprüfung nach der Inbetriebnahme."
+      },
+      {
+        "alias": "Quelle: APP.3.2.A16 (S.393)",
+        "claim": "APP.3.2.A16 Penetrationstest und Revision von Webservern (B) MÜSSEN Webserver regelmäßig auf Sicherheitsprobleme geprüft und die Ergebnisse dokumentiert sowie dem ISB vorgelegt werden",
+        "supported": false,
+        "grund": "Der Quelltext verwendet „SOLLEN“ und formuliert damit keine zwingende Vorgabe („MÜSSEN“) für Prüfungen und Dokumentation."
+      },
+      {
+        "alias": "Quelle: SYS.1.1.A11 (S.487)",
+        "claim": "SYS.1.1.A11 Festlegung einer Sicherheitsrichtlinie für Server (B) MUSS eine spezifische Richtlinie für Server erstellt, allen Verantwortlichen bekannt gemacht und deren Umsetzung regelmäßig kontrolliert werden",
+        "supported": false,
+        "grund": "Auch hier wird nur empfohlen („SOLLEN“), nicht verbindlich gefordert („MUSS“), die Richtlinie zu erstellen, bekannt zu machen und zu kontrollieren."
+      },
+      {
+        "alias": "Quelle: SYS.1.1.A33 (S.490)",
+        "claim": "SYS.1.1.A33 Aktive Verwaltung der Wurzelzertifikate (B) MUSS dokumentiert werden, welche Wurzelzertifikate benötigt werden, und regelmäßig geprüft werden, ob sie noch den Vorgaben entsprechen",
+        "supported": false,
+        "grund": "Der Text spricht von „SOLLEN“ und stellt damit keine zwingende Pflicht („MUSS“) zur Dokumentation und Prüfung der Wurzelzertifikate dar."
+      }
+    ],
+    "modal_verb_checked": 5,
+    "modal_verb_mismatches": [
+      {
+        "alias": "Quelle: SYS.1.1.A24 (S.489)",
+        "claim": "SYS.1.1.A24 Sicherheitsprüfungen für Server (B) MÜSSEN regelmäßige Sicherheitstests durchgeführt werden, um die Einhaltung aller Vorgaben zu prüfen und Schwachstellen zu identifizieren",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      },
+      {
+        "alias": "Quelle: SYS.1.1.A16 (S.488)",
+        "claim": "SYS.1.1.A16 Sichere Installation und Grundkonfiguration von Servern (B) MÜSSEN vor der Inbetriebnahme eine vollständige Installation und Konfiguration in einer getrennten Umgebung erfolgen und anschließend regelmäßig überprüft werden",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE",
+          "SOLLTEN NICHT"
+        ],
+        "matches": false
+      },
+      {
+        "alias": "Quelle: APP.3.2.A16 (S.393)",
+        "claim": "APP.3.2.A16 Penetrationstest und Revision von Webservern (B) MÜSSEN Webserver regelmäßig auf Sicherheitsprobleme geprüft und die Ergebnisse dokumentiert sowie dem ISB vorgelegt werden",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      },
+      {
+        "alias": "Quelle: SYS.1.1.A11 (S.487)",
+        "claim": "SYS.1.1.A11 Festlegung einer Sicherheitsrichtlinie für Server (B) MUSS eine spezifische Richtlinie für Server erstellt, allen Verantwortlichen bekannt gemacht und deren Umsetzung regelmäßig kontrolliert werden",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      },
+      {
+        "alias": "Quelle: SYS.1.1.A33 (S.490)",
+        "claim": "SYS.1.1.A33 Aktive Verwaltung der Wurzelzertifikate (B) MUSS dokumentiert werden, welche Wurzelzertifikate benötigt werden, und regelmäßig geprüft werden, ob sie noch den Vorgaben entsprechen",
+        "claim_groups": [
+          "pflicht"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      }
+    ]
+  },
+  {
+    "label": "einfach",
+    "question": "Wie müssen Prozesse im Identitäts- und Berechtigungsmanagement strukturiert sein?",
+    "checked": 5,
+    "unsupported": 5,
+    "mismatches": [
+      {
+        "alias": "Quelle: ORP.4.A15 (S.127)",
+        "claim": "ORP.4.A15 Vorgehensweise und Konzeption der Prozesse beim Identitäts‑ und Berechtigungsmanagement (B) – Richtlinien verwalten, um Vorgaben für Identitäten und Berechtigungen festzulegen",
+        "supported": false,
+        "grund": "Der Quelltext nennt nur den Prozess „Richtlinien verwalten“, gibt aber keinen Hinweis darauf, dass damit Vorgaben für Identitäten und Berechtigungen festgelegt werden."
+      },
+      {
+        "alias": "Quelle: ORP.4.A15 (S.127)",
+        "claim": "ORP.4.A15 Vorgehensweise und Konzeption der Prozesse beim Identitäts‑ und Berechtigungsmanagement (B) – Identitätsprofile verwalten, damit jede Person eindeutig zugeordnet werden kann",
+        "supported": false,
+        "grund": "Der Quelltext listet „Identitätsprofile verwalten“ auf, enthält jedoch keine Aussage, dass dadurch jede Person eindeutig zugeordnet wird."
+      },
+      {
+        "alias": "Quelle: ORP.4.A15 (S.127)",
+        "claim": "ORP.4.A15 Vorgehensweise und Konzeption der Prozesse beim Identitäts‑ und Berechtigungsmanagement (B) – Benutzendenkennungen verwalten, um Konten zu erstellen, zu ändern und zu löschen",
+        "supported": false,
+        "grund": "„Benutzendenkennungen verwalten“ wird genannt, aber der Zweck (Konten erstellen, ändern, löschen) wird nicht im Quelltext erwähnt."
+      },
+      {
+        "alias": "Quelle: ORP.4.A15 (S.127)",
+        "claim": "ORP.4.A15 Vorgehensweise und Konzeption der Prozesse beim Identitäts‑ und Berechtigungsmanagement (B) – Berechtigungsprofile verwalten, um Zugriffsrechte strukturiert zuzuweisen",
+        "supported": false,
+        "grund": "Der Prozess „Berechtigungsprofile verwalten“ steht im Quelltext, jedoch fehlt die Angabe, dass damit Zugriffsrechte strukturiert zugewiesen werden."
+      },
+      {
+        "alias": "Quelle: ORP.4.A15 (S.127)",
+        "claim": "ORP.4.A15 Vorgehensweise und Konzeption der Prozesse beim Identitäts‑ und Berechtigungsmanagement (B) – Rollen verwalten, um Aufgaben und Rechte gruppiert zuzuordnen",
+        "supported": false,
+        "grund": "„Rollen verwalten“ wird aufgeführt, aber der Zweck, Aufgaben und Rechte gruppiert zuzuordnen, wird nicht explizit genannt."
+      }
+    ],
+    "modal_verb_checked": 1,
+    "modal_verb_mismatches": [
+      {
+        "alias": "Quelle: ORP.4.A15 (S.127)",
+        "claim": "ORP.4.A15 Vorgehensweise und Konzeption der Prozesse beim Identitäts‑ und Berechtigungsmanagement (B) – Identitätsprofile verwalten, damit jede Person eindeutig zugeordnet werden kann",
+        "claim_groups": [
+          "option"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTEN",
+          "SOLLTE"
+        ],
+        "matches": false
+      }
+    ]
+  },
+  {
+    "label": "komplex",
+    "question": "Wie werden organisatorische und technische Maßnahmen in Bezug auf Telearbeit miteinander verzahnt?",
+    "checked": 5,
+    "unsupported": 2,
+    "mismatches": [
+      {
+        "alias": "Quelle: OPS.1.2.4 Beschreibung (S.261-263)",
+        "claim": "Der Baustein OPS.1.2.4 definiert, dass für jeden Telearbeitsplatz sowohl organisatorische Regelungen (z. B. Verantwortlichkeiten, Abläufe) als auch technische Schutzmaßnahmen (z. B. sichere Telekommunikationsverbindung, Hard‑ und Software‑Absicherung) erforderlich sind, die aufeinander abgestimmt werden müssen",
+        "supported": false,
+        "grund": "Der Quelltext nennt den Baustein OPS.1.2.4 und dessen Anwendung, aber enthält keine konkrete Aussage zu sowohl organisatorischen als auch technischen Maßnahmen und deren Abstimmung."
+      },
+      {
+        "alias": "Quelle: OPS.1.2.4.A2 (S.263)",
+        "claim": "Technisch müssen die Telearbeitsrechner strenge Sicherheitsanforderungen erfüllen (Zugriffskontrolle, Verschlüsselung, nur autorisierte Nutzung), wobei die Umsetzung dieser Vorgaben durch die organisatorisch festgelegten Richtlinien und Verantwortlichkeiten kontrolliert wird",
+        "supported": false,
+        "grund": "Der Quelltext nennt Zugriffskontrolle und autorisierte Nutzung, aber keine Verschlüsselung und keine Verknüpfung mit organisatorischen Richtlinien bzw. Verantwortlichkeiten."
+      }
+    ],
+    "modal_verb_checked": 2,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "komplex",
+    "question": "Was sollten Management-Berichte zur Informationssicherheit enthalten?",
+    "checked": 5,
+    "unsupported": 1,
+    "mismatches": [
+      {
+        "alias": "Quelle: 4.2 Kommunikation und Wissen (S.22-24)",
+        "claim": "Sicherheitsvorfälle** sind zu berichten, inklusive Art, Umfang und getroffener Gegenmaßnahmen, damit Risiken transparent bleiben.",
+        "supported": false,
+        "grund": "Der Quelltext erwähnt nur \"Berichte über Sicherheitsvorfälle\", gibt jedoch keine Details zu Art, Umfang oder Gegenmaßnahmen."
+      }
+    ],
+    "modal_verb_checked": 0,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "komplex",
+    "question": "Wie wird verhindert, dass Mitarbeitende Sicherheitsmaßnahmen im Homeoffice vernachlässigen?",
+    "checked": 2,
+    "unsupported": 0,
+    "mismatches": [],
+    "modal_verb_checked": 2,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "komplex",
+    "question": "Wann müssen Berechtigungen entzogen werden?",
+    "checked": 5,
+    "unsupported": 2,
+    "mismatches": [
+      {
+        "alias": "Quelle: ORP.4.A6 (S.125)",
+        "claim": "ORP.4.A6 Vergabe von Zugangsberechtigungen (B) – Die Ausgabe bzw. der Entzug von Zugangsberechtigungen MUSS dokumentiert werden",
+        "supported": false,
+        "grund": "Der Quelltext verlangt Dokumentation nur bei Verwendung von Chipkarten, nicht allgemein für alle Zugangsberechtigungen."
+      },
+      {
+        "alias": "Quelle: ORP.4.A7 (S.125)",
+        "claim": "ORP.4.A7 Vergabe von Zugriffsrechten (B) – Die Ausgabe bzw. der Entzug von Zugriffsrechten MUSS dokumentiert werden",
+        "supported": false,
+        "grund": "Der Quelltext verlangt Dokumentation nur, wenn Chipkarten oder Token eingesetzt werden, nicht generell für alle Zugriffsrechte."
+      }
+    ],
+    "modal_verb_checked": 5,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "komplex",
+    "question": "Welche Einschränkungen bringt Virtual Secure Mode mit sich?",
+    "checked": 1,
+    "unsupported": 0,
+    "mismatches": [],
+    "modal_verb_checked": 1,
+    "modal_verb_mismatches": [
+      {
+        "alias": "Quelle: SYS.1.2.3.A8 (S.500-502)",
+        "claim": "Der Virtual Secure Mode (VSM) kann forensische Untersuchungen, etwa zur Bearbeitung von Sicherheitsvorfällen, einschränken oder erschweren.",
+        "claim_groups": [
+          "option"
+        ],
+        "source_groups": [
+          "empfehlung"
+        ],
+        "source_modal_verben": [
+          "SOLLTE"
+        ],
+        "matches": false
+      }
+    ]
+  },
+  {
+    "label": "komplex",
+    "question": "Was gehört in unser Cloud-Sicherheitskonzept?",
+    "checked": 4,
+    "unsupported": 1,
+    "mismatches": [
+      {
+        "alias": "Quelle: OPS.2.2.A7 (S.282)",
+        "claim": "Auf Basis der identifizierten Sicherheitsanforderungen ist ein Cloud‑Sicherheitskonzept zu erstellen, das die konkreten Schutzmaßnahmen für die Nutzung der Cloud‑Dienste beschreibt",
+        "supported": false,
+        "grund": "Quelltext nennt die Erstellung eines Sicherheitskonzepts auf Basis der Anforderungen, erwähnt jedoch nicht explizit, dass konkrete Schutzmaßnahmen beschrieben werden."
+      }
+    ],
+    "modal_verb_checked": 0,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "komplex",
+    "question": "Welche Schritte sind erforderlich, um den Schutzbedarf für Geschäftsprozesse und Anwendungen zu ermitteln, und welche Schadensszenarien sind dabei zu berücksichtigen?",
+    "checked": 9,
+    "unsupported": 4,
+    "mismatches": [
+      {
+        "alias": "Quelle: 8.2.3 Schutzbedarfsfeststellung für Geschäfts... (S.110)",
+        "claim": "1. Alle Geschäftsprozesse und die verarbeiteten Informationen systematisch erfassen und beschreiben ",
+        "supported": false,
+        "grund": "Quelltext spricht von Ermittlung des Schutzbedarfs, nicht von systematischer Erfassung und Beschreibung aller Geschäftsprozesse und Informationen."
+      },
+      {
+        "alias": "Quelle: 8.2.3 Schutzbedarfsfeststellung für Geschäfts... (S.110)",
+        "claim": "2. Mit den Prozessverantwortlichen ein „Was‑wäre‑wenn?‑“‑Brain‑Storming durchführen, um realistische Schadensszenarien (materielle / ideelle Schäden) zu erarbeiten ",
+        "supported": false,
+        "grund": "Quelltext erwähnt ein \"Was wäre, wenn?\"‑Fragen mit Anwendern, jedoch nicht ausdrücklich ein Brain‑Storming mit Prozessverantwortlichen für Schadensszenarien."
+      },
+      {
+        "alias": "Quelle: 8.2.3 Schutzbedarfsfeststellung für Geschäfts... (S.110)",
+        "claim": "Materielle Schäden (finanzielle Verluste, Produktionsausfall) ",
+        "supported": false,
+        "grund": "Quelltext nennt keine konkreten materiellen Schäden wie finanzielle Verluste oder Produktionsausfall."
+      },
+      {
+        "alias": "Quelle: 8.2.2 Vorgehen bei der Schutzbedarfsfeststellung (S.108-109)",
+        "claim": "Ideelle Schäden (Reputationsverlust, rechtliche Folgen) ",
+        "supported": false,
+        "grund": "Quelltext enthält keine Erwähnung von ideellen Schäden wie Reputationsverlust oder rechtlichen Folgen."
+      }
+    ],
+    "modal_verb_checked": 0,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "komplex",
+    "question": "Welche organisatorischen Risiken bestehen bei fehlender Geräteverwaltung?",
+    "checked": 5,
+    "unsupported": 2,
+    "mismatches": [
+      {
+        "alias": "Quelle: ORP.1 Gefaehrdungslage (S.107-111)",
+        "claim": "Unzureichende Kommunikation von Geräteverwaltungsrichtlinien erhöht das Risiko, dass vertrauliche Informationen unbeabsichtigt preisgegeben oder missbraucht werden",
+        "supported": false,
+        "grund": "Der Text erwähnt fehlende Regelungen, aber nicht explizit die Kommunikation von Geräteverwaltungsrichtlinien oder das Risiko von unbeabsichtigter Preisgabe vertraulicher Informationen."
+      },
+      {
+        "alias": "Quelle: OPS.1.1.2 Gefaehrdungslage (S.211-219)",
+        "claim": "Ohne klare Prozesse zur Inventarisierung und Pflege von Geräten können veraltete oder unsichere Hardware im Einsatz bleiben und Angriffsflächen vergrößern",
+        "supported": false,
+        "grund": "Der Text behandelt nur Zuständigkeiten, nicht Inventarisierungs‑ oder Pflegeprozesse von Geräten, daher fehlt die Aussage zur veralteten oder unsicheren Hardware."
+      }
+    ],
+    "modal_verb_checked": 0,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "komplex",
+    "question": "Wie fange ich überhaupt an? Was sind die ersten Schritte beim Aufbau eines ISMS?",
+    "checked": 2,
+    "unsupported": 1,
+    "mismatches": [
+      {
+        "alias": "Quelle: 10.1 IT-Grundschutz-Methodik (S.40)",
+        "claim": "5. **Risikobewertung durchführen** – Die Risikoanalyse liefert die Basis für die Auswahl geeigneter Maßnahmen und legt das angestrebte Sicherheitsniveau fest.",
+        "supported": false,
+        "grund": "Der Quelltext nennt Risikobeurteilung und die Auswahl geeigneter Maßnahmen, erwähnt jedoch nicht, dass die Risikoanalyse das angestrebte Sicherheitsniveau festlegt."
+      }
+    ],
+    "modal_verb_checked": 0,
+    "modal_verb_mismatches": []
+  },
+  {
+    "label": "komplex",
+    "question": "Warum ist eine Dokumentation der Anforderungen notwendig?",
+    "checked": 4,
+    "unsupported": 1,
+    "mismatches": [
+      {
+        "alias": "Quelle: 5 Dokumentation im Sicherheitsprozess (S.52)",
+        "claim": "Sie bildet die Grundlage für die Zertifizierung nach ISO 27001, weil dort bestimmte Dokumente zwingend erstellt werden müssen",
+        "supported": false,
+        "grund": "Der Text spricht von Dokumentation im Sicherheitsprozess, erwähnt jedoch weder ISO 27001 noch deren Zertifizierungsanforderungen."
+      }
+    ],
+    "modal_verb_checked": 1,
+    "modal_verb_mismatches": []
+  }
+]

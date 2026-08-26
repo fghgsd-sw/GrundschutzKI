@@ -39,9 +39,36 @@ SCORE_THRESHOLD = float(_getenv("SCORE_THRESHOLD", "0.0"))
 # active: scope correctness is already guaranteed by the filter, so a lower
 # score only affects recall within that scope, not precision across the corpus.
 SCORE_THRESHOLD_SCOPED = float(_getenv("SCORE_THRESHOLD_SCOPED", "0.25"))
+# Below this best-hit score, rag_retrieve attaches an explicit "hinweis" field
+# to its tool result, giving the LLM an objective, code-computed signal to
+# decide whether a second, differently-worded call is warranted — instead of
+# relying on the model's own (unreliable, per observed cases) judgment of
+# whether retrieval was sufficient.
+WEAK_RETRIEVAL_HINT_THRESHOLD = float(_getenv("WEAK_RETRIEVAL_HINT_THRESHOLD", "0.6"))
 STREAMING_ENABLED = (_getenv("STREAMING_ENABLED", "false") or "false").lower() == "true"
 STREAMING_DOUBLE_PASS = (_getenv("STREAMING_DOUBLE_PASS", "false") or "false").lower() == "true"
 CITATION_VALIDATION = (_getenv("CITATION_VALIDATION", "false") or "false").lower() == "true"
+# TASK_14: Phase-3 LLM-as-Judge — prüft, ob der zitierte Chunk-Volltext die
+# jeweilige Behauptung inhaltlich deckt (Struktur-/Alias-Checks in Phase 1+2
+# können das nicht: sie prüfen ID-Matches bzw. welcher Alias am besten passt,
+# nie ob die Aussage tatsächlich im Text steht). Startet im reinen Logging-
+# Modus (kein Rewrite) zur Kalibrierung der Fehlerquote, siehe TASK_14.
+CITATION_JUDGE_ENABLED = (_getenv("CITATION_JUDGE_ENABLED", "false") or "false").lower() == "true"
+# Leer = CHAT_MODEL. Reine Klassifikationsaufgabe, ein günstigeres Modell reicht ggf. aus.
+CITATION_JUDGE_MODEL = _getenv("CITATION_JUDGE_MODEL") or None
+# Schaltet den eigentlichen Rewrite-Schritt frei (setzt CITATION_JUDGE_ENABLED
+# voraus). Getrennt vom reinen Logging-Flag, damit Erkennung und Korrektur
+# unabhängig kalibriert/deaktiviert werden können. Siehe TASK_14.
+CITATION_JUDGE_REPAIR_ENABLED = (
+    _getenv("CITATION_JUDGE_REPAIR_ENABLED", "false") or "false"
+).lower() == "true"
+# Rein code-basierter Zusatzcheck (kein LLM-Call): vergleicht das im Fließtext
+# genannte Modalverb (MUSS/SOLLTE/KANN-Gruppe) mit dem in den Ingest-Metadaten
+# hinterlegten `modal_verben`-Feld der zitierten Anforderung. Erkennt gezielt
+# die SOLLTE→MUSS-Eskalation (Standard- als Basis-Anforderung dargestellt),
+# die der LLM-Judge zwar auch findet, aber teurer und weniger zuverlässig als
+# ein direkter Metadaten-Abgleich. Siehe TASK_14.
+MODAL_VERB_CHECK_ENABLED = (_getenv("MODAL_VERB_CHECK_ENABLED", "false") or "false").lower() == "true"
 HYDE_ENABLED = (_getenv("HYDE_ENABLED", "false") or "false").lower() == "true"
 
 # TASK_13: Pre-retrieval routing

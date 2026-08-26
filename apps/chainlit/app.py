@@ -94,7 +94,12 @@ from settings import (
     SYSTEM_PROMPT_PATH,
     TOP_K,
     CITATION_VALIDATION,
+    CITATION_JUDGE_ENABLED,
+    CITATION_JUDGE_MODEL,
+    CITATION_JUDGE_REPAIR_ENABLED,
+    MODAL_VERB_CHECK_ENABLED,
     STREAMING_ENABLED,
+    WEAK_RETRIEVAL_HINT_THRESHOLD,
 )
 from user_profile import (
     _kw_key,
@@ -1117,6 +1122,323 @@ def _validate_citations(
         return ""
 
     return _CITATION_CANONICAL_RE.sub(check_span, content)
+
+
+def _extract_claim_source_pairs(
+    content: str,
+    alias_to_full_text: dict[str, str],
+) -> list[dict[str, str]]:
+    """TASK_14 Phase 3: zu jedem Vorkommen eines bekannten Alias in ``content``
+    die vorausgehende Zeile (Behauptung) + der volle Chunk-Text der zitierten
+    Quelle. Sucht nach dem exakten, bereits kanonisierten Alias-String (wie an
+    anderer Stelle in der Pipeline, z.B. beim cited_aliases-Filter oben) statt
+    den Zitat-Span selbst neu zu parsen — robuster gegen Restzeichen/Klammern.
+    Eine Behauptung mit mehrfach zitiertem Alias (Sammelquelle) erzeugt
+    entsprechend mehrere Paare, eines pro Fundstelle.
+    """
+    pairs: list[dict[str, str]] = []
+    for alias, full_text in alias_to_full_text.items():
+        if not full_text or not alias or alias not in content:
+            continue
+        for match in re.finditer(re.escape(alias), content):
+            line_start = content.rfind("\n", 0, match.start()) + 1
+            claim = content[line_start:match.start()].strip(" -•\t*")
+            if claim:
+                pairs.append({"alias": alias, "claim": claim, "chunk_text": full_text})
+    return pairs
+
+
+async def _judge_citation_support(pairs: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """TASK_14 Phase 3: EIN gebündelter LLM-Call prüft für jedes (Behauptung,
+    Quelltext)-Paar, ob der Quelltext die Behauptung inhaltlich deckt — nicht
+    nur thematisch ähnlich ist. Gibt die VOLLSTÄNDIGE Verdict-Liste zurück
+    (auch supported=True), damit der Aufrufer eine Fehlerquote berechnen kann.
+    Fail-open: bei Parse-/Call-Fehlern wird eine leere Liste zurückgegeben,
+    der Aufrufer verändert dann nichts (aktuell ohnehin nur Logging, kein
+    Rewrite — siehe TASK_14 Priorisierung).
+    """
+    if not pairs:
+        return []
+
+    prompt_lines = [
+        "Prüfe für jedes nummerierte Paar, ob der Quelltext die Behauptung "
+        "inhaltlich belegt (die konkrete Aussage, nicht nur ein ähnliches Thema). "
+        "Antworte NUR mit einem JSON-Array, ein Objekt pro Paar, keine weitere Ausgabe:\n"
+        '[{"index": 1, "supported": true, "grund": "kurze Begründung"}]\n'
+    ]
+    for i, pair in enumerate(pairs, 1):
+        prompt_lines.append(
+            f"\n[{i}] Behauptung: {pair['claim']}\n"
+            f"Quelltext: {pair['chunk_text'][:800]}\n"
+        )
+    prompt = "".join(prompt_lines)
+
+    try:
+        response = await chat(
+            [{"role": "user", "content": prompt}],
+            model=CITATION_JUDGE_MODEL,
+        )
+        raw = (response.choices[0].message.content or "[]").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if "\n" in raw:
+                raw = raw.split("\n", 1)[1]
+        verdicts = json.loads(raw)
+    except Exception as exc:
+        print(f"[CITATION_JUDGE] judge_call_failed: {exc}")
+        return []
+
+    if not isinstance(verdicts, list):
+        return []
+
+    results: list[dict[str, Any]] = []
+    for verdict in verdicts:
+        if not isinstance(verdict, dict):
+            continue
+        idx = verdict.get("index")
+        if not isinstance(idx, int) or not (1 <= idx <= len(pairs)):
+            continue
+        pair = pairs[idx - 1]
+        results.append(
+            {
+                "alias": pair["alias"],
+                "claim": pair["claim"],
+                "supported": bool(verdict.get("supported", True)),
+                "grund": str(verdict.get("grund", ""))[:200],
+            }
+        )
+    return results
+
+
+async def _repair_flagged_claims(
+    content: str,
+    mismatches: list[dict[str, Any]],
+    retrieved_context: str,
+) -> str:
+    """TASK_14 Phase 3, Repair-Schritt: überarbeitet GEZIELT nur die vom
+    Judge als nicht belegt markierten Punkte — entweder mit einem tatsächlich
+    passenden Beleg aus dem bereits abgerufenen Kontext (kein neuer
+    rag_retrieve-Call), oder durch explizite Kennzeichnung als nicht
+    eindeutig belegt. Nie stillschweigende Entfernung — die stille
+    Strip-on-Fail-Variante aus Phase 1 hatte sich als schlechter erwiesen als
+    eine falsche-aber-sichtbare Quelle (bare unbelegte Behauptungen).
+
+    Max. 1 Versuch, kein Retry-Loop. Fail-open: bei Fehlern wird der
+    unveränderte Originaltext zurückgegeben.
+    """
+    if not mismatches:
+        return content
+
+    flagged_lines = "\n".join(
+        f"- Behauptung: {m['claim']}\n  Aktuell zitiert: {m['alias']}\n  Problem: {m['grund']}"
+        for m in mismatches
+    )
+    prompt = (
+        "Die folgende Antwort enthält Punkte, bei denen die angegebene Quelle "
+        "die Behauptung nachweislich NICHT belegt (siehe Begründung je Punkt). "
+        "Überarbeite AUSSCHLIESSLICH diese Punkte:\n"
+        "- Falls im untenstehenden Kontext ein tatsächlich passender Beleg für "
+        "die Behauptung existiert, zitiere diesen stattdessen korrekt (exaktes "
+        "Alias-Format aus dem Kontext übernehmen, z.B. 'Quelle: ... (S.X)').\n"
+        "- Falls kein passender Beleg existiert, kennzeichne den Punkt explizit "
+        "mit dem Zusatz '(nicht eindeutig belegt)' statt ihn ersatzlos zu streichen.\n"
+        "- Alle anderen, nicht beanstandeten Punkte bleiben unverändert.\n"
+        "- Erfinde keine neuen Fakten, nutze ausschließlich den mitgelieferten Kontext.\n\n"
+        f"Beanstandete Punkte:\n{flagged_lines}\n\n"
+        f"Verfügbarer Kontext (bereits abgerufene Quellen dieser Antwort):\n"
+        f"{retrieved_context[:6000]}\n\n"
+        f"Vollständige Antwort:\n{content}\n\n"
+        "Gib NUR die vollständige, überarbeitete Antwort zurück (gleiche Struktur, "
+        "gleiche Sprache), keine zusätzlichen Erklärungen davor oder danach."
+    )
+
+    try:
+        response = await chat([{"role": "user", "content": prompt}])
+        repaired = response.choices[0].message.content
+    except Exception as exc:
+        print(f"[CITATION_JUDGE] repair_call_failed: {exc}")
+        return content
+
+    return repaired.strip() if isinstance(repaired, str) and repaired.strip() else content
+
+
+def _finalize_citation_panel(
+    content: str,
+    canon_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]],
+    session_source_catalog: dict[str, Any],
+    canon_alias_to_ids: dict[str, tuple[str | None, str | None]] | None = None,
+) -> tuple[list[dict[str, Any]], str, bool]:
+    """TASK_14 Repair-Nachlauf: bestimmt anhand der tatsächlich in ``content``
+    vorkommenden Aliase neu, welche Quellen final zitiert sind, und baut das
+    Citations-Panel entsprechend neu auf.
+
+    Notwendig, weil das Panel (source_rows_for_session, citation_panel_content,
+    assistant_reply.elements/metadata) weiter oben EINMALIG aus dem
+    Pre-Repair-Content gebaut wird. Ändert der Repair-Schritt, welche Aliase
+    zitiert sind (entfernt welche, oder ersetzt sie durch einen anderen bereits
+    abgerufenen Kandidaten aus dem uncapped canon_rows-Pool), zeigt das Panel
+    sonst weiterhin die alten, im Text gar nicht mehr referenzierten Quellen —
+    genau der beobachtete "Geister-Zitat"-Bug.
+
+    Nutzt canon_rows (uncapped) statt der bereits auf cited_aliases
+    zugeschnittenen source_rows, da der Repair-Schritt auch einen Kandidaten
+    zitieren kann, der vor dem Repair nicht im (gecappten) Panel war.
+    """
+    cited_aliases: set[str] = set()
+    for _, alias, *_ in canon_rows:
+        if not isinstance(alias, str) or not alias:
+            continue
+        escaped_alias = alias.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        if alias in content or escaped_alias in content:
+            cited_aliases.add(alias)
+
+    filtered_rows = [row for row in canon_rows if row[1] in cited_aliases]
+
+    source_catalog_changed = False
+    resolved_rows_for_session: list[dict[str, Any]] = []
+    resolved_tuples: list[tuple[int, str, str, int | None, int | None, str | None, str]] = []
+    for _, alias, file_name, page_start, page_end, section_title, evidence in filtered_rows:
+        source_id, _, catalog_changed = _register_source_in_catalog(
+            session_source_catalog,
+            file_name=file_name,
+            page_start=page_start if isinstance(page_start, int) else None,
+            page_end=page_end if isinstance(page_end, int) else None,
+            section_title=section_title if isinstance(section_title, str) else None,
+        )
+        if catalog_changed:
+            source_catalog_changed = True
+        resolved_tuples.append((source_id, alias, file_name, page_start, page_end, section_title, evidence))
+        _ids = (canon_alias_to_ids or {}).get(alias, (None, None))
+        resolved_rows_for_session.append(
+            {
+                "alias": alias,
+                "file": file_name,
+                "page": page_start,
+                "page_start": page_start,
+                "page_end": page_end,
+                "section": section_title,
+                "evidence": evidence or None,
+                "source_id": source_id,
+                "anforderung_id": _ids[0],
+                "baustein_id": _ids[1],
+            }
+        )
+
+    detail_block = ""
+    if resolved_tuples:
+        box_lines = ["## Quellen & Belegstellen", ""]
+        for visible_idx, (src_idx, alias, file_name, page_start, page_end, section_title, evidence) in enumerate(
+            resolved_tuples, start=1
+        ):
+            page_label = _page_label(page_start, page_end)
+            section_label = section_title or "Abschnitt unbekannt"
+            pdf_url = _source_pdf_url(file_name)
+            page_for_link = page_start if isinstance(page_start, int) else None
+            if isinstance(page_for_link, int):
+                pdf_url = f"{pdf_url}#page={page_for_link}"
+            box_lines.append(f"### {alias}")
+            box_lines.append(f"- Datei: `{file_name}`")
+            box_lines.append(f"- PDF: [Öffnen]({pdf_url})")
+            box_lines.append(f"- Quellen-ID: {src_idx if isinstance(src_idx, int) and src_idx > 0 else visible_idx}")
+            box_lines.append(f"- Seiten: {page_label}")
+            box_lines.append(f"- Abschnitt: *{section_label}*")
+            if evidence:
+                box_lines.append(f"- Belegsnippet: *\"{evidence}\"*")
+            box_lines.append("")
+        detail_block = "\n".join(box_lines)
+
+    return resolved_rows_for_session, detail_block, source_catalog_changed
+
+
+_MODAL_VERB_RE = re.compile(
+    r"\b(MUSS\s+NICHT|MÜSSEN\s+NICHT|DARF\s+NICHT|DÜRFEN\s+NICHT|"
+    r"SOLLTE\s+NICHT|SOLLTEN\s+NICHT|MUSS|MÜSSEN|SOLLTE|SOLLTEN|KANN|KÖNNEN)\b"
+)
+# BSI-Grundschutz-Modalverben gruppiert nach Verbindlichkeitsgrad. MUSS/DARF-NICHT
+# entspricht einer Basis-Anforderung (verpflichtend), SOLLTE einer Standard-
+# Anforderung (empfohlen), KANN einer optionalen/erhöhten Anforderung.
+_MODAL_VERB_GROUPS = {
+    "MUSS": "pflicht",
+    "MÜSSEN": "pflicht",
+    "MUSS NICHT": "pflicht",
+    "MÜSSEN NICHT": "pflicht",
+    "DARF NICHT": "pflicht",
+    "DÜRFEN NICHT": "pflicht",
+    "SOLLTE": "empfehlung",
+    "SOLLTEN": "empfehlung",
+    "SOLLTE NICHT": "empfehlung",
+    "SOLLTEN NICHT": "empfehlung",
+    "KANN": "option",
+    "KÖNNEN": "option",
+}
+
+
+def _modal_verb_groups_in(text: str) -> set[str]:
+    groups: set[str] = set()
+    for match in _MODAL_VERB_RE.finditer(text.upper()):
+        raw = re.sub(r"\s+", " ", match.group(0).strip())
+        group = _MODAL_VERB_GROUPS.get(raw)
+        if group:
+            groups.add(group)
+    return groups
+
+
+def _extract_modal_verb_checks(
+    content: str,
+    alias_to_modal_verben: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    """TASK_14-Ergänzung, rein code-basiert (kein LLM-Call): vergleicht das im
+    Claim genannte Modalverb (Pflicht/Empfehlung/Option-Gruppe) mit dem in den
+    Ingest-Metadaten hinterlegten ``modal_verben``-Feld der zitierten
+    Anforderung (ingest.py, payload-Feld ``modal_verben`` bei doc_type
+    "anforderung", unverändert im Qdrant-Payload und damit in
+    ``result.metadata["modal_verben"]`` verfügbar).
+
+    Erkennt gezielt die beobachtete SOLLTE→MUSS-Eskalation (eine Standard-
+    Anforderung wird im Fließtext als verpflichtend dargestellt) — billiger
+    und für diese spezifische Abweichung präziser als der LLM-Judge, da die
+    Ground Truth hier schon strukturiert vorliegt statt aus Freitext
+    erschlossen werden zu müssen.
+
+    Gibt — analog zu ``_judge_citation_support()`` — ALLE geprüften Paare
+    zurück (inkl. ``matches=True``), nicht nur die Abweichungen, damit der
+    Aufrufer eine echte Rate (geprüft vs. abweichend) berechnen kann statt nur
+    eine Rohzahl ohne Nenner.
+    """
+    checks: list[dict[str, Any]] = []
+    for alias, modal_verben in alias_to_modal_verben.items():
+        if not modal_verben or not alias or alias not in content:
+            continue
+        source_groups: set[str] = set()
+        for mv in modal_verben:
+            if not isinstance(mv, str):
+                continue
+            normalized = re.sub(r"\s+", " ", mv.strip().upper())
+            group = _MODAL_VERB_GROUPS.get(normalized)
+            if group:
+                source_groups.add(group)
+        if not source_groups:
+            continue
+
+        for match in re.finditer(re.escape(alias), content):
+            line_start = content.rfind("\n", 0, match.start()) + 1
+            claim = content[line_start:match.start()].strip(" -•\t*")
+            if not claim:
+                continue
+            claim_groups = _modal_verb_groups_in(claim)
+            if not claim_groups:
+                continue  # kein Modalverb im Claim -> nicht prüfbar, nicht mitgezählt
+            checks.append(
+                {
+                    "alias": alias,
+                    "claim": claim,
+                    "claim_groups": sorted(claim_groups),
+                    "source_groups": sorted(source_groups),
+                    "source_modal_verben": modal_verben,
+                    "matches": bool(claim_groups & source_groups),
+                }
+            )
+    return checks
 
 
 def _markdown_link(label: str, url: str) -> str:
@@ -3999,6 +4321,18 @@ async def main(message: cl.Message):
                         "context": context,
                         "citations": citations_text,
                     }
+                    best_score = max((r.score for r in results), default=0.0)
+                    if best_score < WEAK_RETRIEVAL_HINT_THRESHOLD:
+                        # Objective, code-computed signal instead of relying on the
+                        # model's own (per observed cases unreliable) judgment of
+                        # whether the retrieved context is sufficient — see the
+                        # RAG_RETRIEVE-Regel in system.md that ties the "second call
+                        # allowed" exception to this hint being present.
+                        tool_payload["hinweis"] = (
+                            f"Die Treffer sind nur mäßig relevant (bester Score: {best_score:.2f}). "
+                            "Falls die Antwort dadurch lückenhaft wirkt, ist ein zweiter "
+                            "rag_retrieve-Aufruf mit anders formulierter Anfrage erlaubt."
+                        )
                     cached_tool_payloads[signature] = (results, tool_payload)
 
                 for item in results:
@@ -4165,6 +4499,8 @@ async def main(message: cl.Message):
         # survived the cap.
         canon_rows: list[tuple[int, str, str, int | None, int | None, str | None, str]] = []
         canon_alias_to_full_text: dict[str, str] = {}
+        canon_alias_to_modal_verben: dict[str, list[str]] = {}
+        canon_alias_to_ids: dict[str, tuple[str | None, str | None]] = {}
         _canon_seen: set[tuple[str, int | None, str | None]] = set()
         for _canon_idx, _canon_result in enumerate(last_results, start=1):
             _canon_file = extract_source_file(_canon_result.metadata)
@@ -4184,6 +4520,16 @@ async def main(message: cl.Message):
             _canon_alias = _source_alias(_canon_idx, _canon_section, _canon_page, _canon_page_end)
             canon_rows.append((_canon_idx, _canon_alias, _canon_file, _canon_page, _canon_page_end, _canon_section, ""))
             canon_alias_to_full_text[_canon_alias] = _canon_result.text or ""
+            _canon_modal_verben = _canon_result.metadata.get("modal_verben")
+            if isinstance(_canon_modal_verben, list) and _canon_modal_verben:
+                canon_alias_to_modal_verben[_canon_alias] = _canon_modal_verben
+            _canon_anforderung_id = _canon_result.metadata.get("anforderung_id")
+            _canon_baustein_id = _canon_result.metadata.get("baustein_id")
+            if isinstance(_canon_anforderung_id, str) or isinstance(_canon_baustein_id, str):
+                canon_alias_to_ids[_canon_alias] = (
+                    _canon_anforderung_id if isinstance(_canon_anforderung_id, str) else None,
+                    _canon_baustein_id if isinstance(_canon_baustein_id, str) else None,
+                )
 
         desired_sources = _desired_source_count(content, len(last_results))
         if MAX_SOURCE_LINKS > 0:
@@ -4479,6 +4825,145 @@ async def main(message: cl.Message):
                 assistant_reply.content,
                 source_rows_for_session,
             )
+
+        # TASK_14 Phase 3: Detect (Judge) + Repair. Priorität laut Absprache:
+        # völlig falsche Quellenangaben (Themen-Fehltreffer) vor der separaten
+        # Modalverb-Feinheit unten beheben.
+        if CITATION_JUDGE_ENABLED and assistant_reply.content and canon_alias_to_full_text:
+            _judge_pairs = _extract_claim_source_pairs(assistant_reply.content, canon_alias_to_full_text)
+            _judge_unsupported: list[dict[str, Any]] = []
+            if _judge_pairs:
+                with cl.Step(name="Zitate werden geprüft", type="tool") as _judge_step:
+                    _judge_step.input = {"citations_checked": len(_judge_pairs)}
+                    _judge_verdicts = await _judge_citation_support(_judge_pairs)
+                    _judge_unsupported = [v for v in _judge_verdicts if not v["supported"]]
+                    _judge_step.output = {
+                        "checked": len(_judge_verdicts),
+                        "unsupported": len(_judge_unsupported),
+                    }
+                if _judge_verdicts:
+                    print(
+                        f"[CITATION_JUDGE] checked={len(_judge_verdicts)} "
+                        f"unsupported={len(_judge_unsupported)} "
+                        f"ratio={len(_judge_unsupported) / len(_judge_verdicts):.2f}"
+                    )
+                    for v in _judge_unsupported:
+                        print(
+                            f"[CITATION_JUDGE] mismatch alias={v['alias'][:60]!r} "
+                            f"claim={v['claim'][:80]!r} grund={v['grund'][:100]!r}"
+                        )
+
+            if _judge_unsupported and CITATION_JUDGE_REPAIR_ENABLED:
+                with cl.Step(name="Zitate werden korrigiert", type="tool") as _repair_step:
+                    _repair_step.input = {"flagged": len(_judge_unsupported)}
+                    _retrieved_context = "\n\n".join(
+                        f"[{alias}]\n{text}" for alias, text in canon_alias_to_full_text.items()
+                    )
+                    _repaired_content = await _repair_flagged_claims(
+                        assistant_reply.content, _judge_unsupported, _retrieved_context
+                    )
+                    _repair_changed = _repaired_content != assistant_reply.content
+                    _repair_step.output = {"changed": _repair_changed}
+
+                if _repair_changed:
+                    _repaired_content = _canonicalize_citations(
+                        _repaired_content, canon_rows, alias_to_full_text=canon_alias_to_full_text
+                    )
+
+                    # Panel/Elemente/Metadaten neu aufbauen statt den Pre-Repair-
+                    # Stand stehen zu lassen — sonst zeigt das Seitenpanel Quellen,
+                    # die im (reparierten) Text gar nicht mehr vorkommen.
+                    (
+                        source_rows_for_session,
+                        citation_panel_content,
+                        _repair_catalog_changed,
+                    ) = _finalize_citation_panel(
+                        _repaired_content, canon_rows, session_source_catalog, canon_alias_to_ids
+                    )
+                    if _repair_catalog_changed:
+                        sanitized_catalog = _sanitize_source_catalog(session_source_catalog)
+                        cl.user_session.set("source_catalog", sanitized_catalog)
+                        _persist_session_source_catalog(session_id, sanitized_catalog)
+
+                    if source_rows_for_session:
+                        _repaired_content = _validate_citations(_repaired_content, source_rows_for_session)
+
+                    assistant_reply.content = (
+                        _repaired_content
+                        + f"\n\n_Hinweis: {len(_judge_unsupported)} Angabe(n) wurden vor der Anzeige "
+                        "auf Zitat-Genauigkeit überprüft und korrigiert._"
+                    )
+
+                    has_panel = bool(citation_panel_content)
+                    assistant_reply.metadata = {
+                        **(assistant_reply.metadata or {}),
+                        "has_citations_panel": has_panel,
+                        "used_source_ids": sorted(
+                            {
+                                row["source_id"]
+                                for row in source_rows_for_session
+                                if isinstance(row.get("source_id"), int) and row["source_id"] > 0
+                            }
+                        ),
+                    }
+                    if has_panel:
+                        assistant_reply.metadata["citation_panel_content"] = citation_panel_content
+                        assistant_reply.metadata["citation_source_rows"] = _sanitize_source_rows_payload(
+                            source_rows_for_session
+                        )
+                        cl.user_session.set("citation_panel_content", citation_panel_content)
+                        cl.user_session.set("citation_source_rows", source_rows_for_session)
+                        _cache_citation_panel_content(assistant_reply.id, citation_panel_content)
+                        assistant_reply.elements = _build_citation_elements(
+                            citation_panel_content,
+                            source_rows_for_session,
+                            citation_step_id=assistant_reply.id,
+                        )
+                    else:
+                        assistant_reply.metadata.pop("citation_panel_content", None)
+                        assistant_reply.metadata.pop("citation_source_rows", None)
+                        cl.user_session.set("citation_panel_content", None)
+                        cl.user_session.set("citation_source_rows", [])
+                        assistant_reply.elements = []
+
+                    inline_pdf_elements = _build_inline_pdf_elements(source_rows_for_session)
+                    if inline_pdf_elements:
+                        assistant_reply.elements = (assistant_reply.elements or []) + inline_pdf_elements
+
+                    assistant_reply.actions = _build_chat_actions(
+                        followup_questions=followup_questions,
+                        has_citations_panel=has_panel,
+                        source_step_id=assistant_reply.id,
+                        citation_panel_content=citation_panel_content,
+                        citation_source_rows=source_rows_for_session,
+                        original_question=message.content,
+                    )
+
+                    print(
+                        f"[CITATION_JUDGE] repaired={len(_judge_unsupported)} "
+                        f"panel_sources={len(source_rows_for_session)}"
+                    )
+
+        # Rein code-basierter Zusatzcheck, kein LLM-Call — siehe
+        # _extract_modal_verb_checks()-Docstring. Ebenfalls reines Logging
+        # in dieser Kalibrierungsphase.
+        if MODAL_VERB_CHECK_ENABLED and assistant_reply.content and canon_alias_to_modal_verben:
+            _modal_checks = _extract_modal_verb_checks(
+                assistant_reply.content, canon_alias_to_modal_verben
+            )
+            if _modal_checks:
+                _modal_mismatches = [c for c in _modal_checks if not c["matches"]]
+                print(
+                    f"[MODAL_VERB_CHECK] checked={len(_modal_checks)} "
+                    f"mismatches={len(_modal_mismatches)} "
+                    f"ratio={len(_modal_mismatches) / len(_modal_checks):.2f}"
+                )
+                for v in _modal_mismatches:
+                    print(
+                        f"[MODAL_VERB_CHECK] alias={v['alias'][:60]!r} "
+                        f"claim_groups={v['claim_groups']} source_groups={v['source_groups']} "
+                        f"source_modal_verben={v['source_modal_verben']} claim={v['claim'][:80]!r}"
+                    )
 
         if _early_streamed_reply is not None:
             await assistant_reply.update()
