@@ -116,20 +116,24 @@ def _load_system_prompt(path: Path) -> str | None:
 CHAINLIT_MD_PATH = Path(__file__).parent / "chainlit.md"
 
 
+_PRIVACY_SECTION_HEADING = "Hinweise zur Evaluation und zum Datenschutz"
+
+
 def _load_privacy_notice() -> str:
-    """Extracts the "Hinweise zum Datenschutz" section from chainlit.md as
-    plain text. chainlit.md is the single source of truth for this legal
-    text — read fresh on every call (not cached) so an edit to the file
-    takes effect immediately, without a restart. Used both by the
-    pre-registration privacy step (via /auth/privacy-notice) and the
-    verification email, to avoid drifted duplicate copies of the same text.
+    """Extracts the privacy/evaluation-notice section (heading given by
+    _PRIVACY_SECTION_HEADING) from chainlit.md as plain text. chainlit.md is
+    the single source of truth for this legal text — read fresh on every
+    call (not cached) so an edit to the file takes effect immediately,
+    without a restart. Used both by the pre-registration privacy step (via
+    /auth/privacy-notice) and the verification email, to avoid drifted
+    duplicate copies of the same text.
     """
     if not CHAINLIT_MD_PATH.is_file():
         return ""
     content = CHAINLIT_MD_PATH.read_text(encoding="utf-8")
     for section in re.split(r"\n##\s+", content):
-        if section.startswith("Hinweise zum Datenschutz"):
-            body = section[len("Hinweise zum Datenschutz"):].strip()
+        if section.startswith(_PRIVACY_SECTION_HEADING):
+            body = section[len(_PRIVACY_SECTION_HEADING):].strip()
             body = re.sub(r"\n-{3,}\s*$", "", body).strip()  # drop trailing "---" separator
             body = re.sub(r"\*\*(.+?)\*\*", r"\1", body)  # drop markdown bold markers
             return body
@@ -147,7 +151,7 @@ async def _send_verification_email(to_email: str, username: str, token: str) -> 
     msg.set_content(
         f"Hallo {username},\n\n"
         f"um die Registrierung abzuschließen, öffnen Sie bitte den unten stehenden Link.\n\n"
-        f"Hinweise zum Datenschutz:\n\n"
+        f"{_PRIVACY_SECTION_HEADING}:\n\n"
         f"{privacy_notice}\n\n\n"
         f"{verify_url}\n\n"
         f"Falls Sie sich nicht mit dieser E-Mail-Adresse registriert haben, ignorieren Sie "

@@ -9,15 +9,17 @@ Grundschutz-KI erstellt zudem Anschlussfragen, die Ihnen  zusätzliche Perspekti
 
 ---
 
-## Hinweise zum Datenschutz
+## Hinweise zur Evaluation und zum Datenschutz
 
-Sie stimmen mit Ihrer Registrierung der Teilnahme an einer Evaluierung der Anwendung Grundschutz-KI zu. Im Evaluierungszeitraum vom 20. Juli bis 14. August 2026 werden nur solche Daten ausgewertet, die Sie aktiv als Feedback (Thumbs up/down + Kommentar) geben. Die Auswertung erfolgt anonymisiert.
+Grundschutz-KI wird im Rahmen einer Masterarbeit gemeinsam mit Fachanwenderinnen und Fachanwendern evaluiert. Ziel ist es, herauszufinden, wie gut ein auf Retrieval-Augmented Generation basierendes System Fragen zum IT-Grundschutz beantworten kann — und wo es noch an seine Grenzen stößt. Mit Ihrer Registrierung stimmen Sie der Teilnahme an dieser Evaluierung zu.
 
-Chatverläufe werden in der Anwendung gespeichert und für die benutzerspezifische Beantwortung verwendet. Sie können Chatverläufe jederzeit selbständig löschen. Nach Abschluss der Evaluierungsphase wird das System zurückgesetzt und alle benutzerbezogenen Daten werden gelöscht.
+**Zeitraum:** bis zum 25. September 2026. Ausgewertet werden ausschließlich die Daten, die Sie aktiv als Feedback geben — über 👍/👎 mit Kommentar sowie das Feedback-Formular —, und zwar anonymisiert.
 
-Im **Feedback-Formular** angegebene Daten (rollenbezogene Gesamteinschätzung, allgemeine Anmerkungen) werden ebenfalls gespeichert und im Rahmen der Evaluierung anonymisiert ausgewertet.
+**Was wir uns von Ihnen wünschen:** Nutzen Sie Grundschutz-KI für Fragen aus Ihrem Arbeitsalltag und bewerten Sie Antworten aktiv. Am Ende Ihrer Teilnahme freuen wir uns zusätzlich über das kurze Feedback-Formular (Menüpunkt „Feedback").
 
-Im Chat **hochgeladene Dateien** werden nicht dauerhaft gespeichert, sondern nach Ende der jeweiligen Sitzung automatisch gelöscht.
+Chatverläufe werden gespeichert und für die benutzerspezifische Beantwortung verwendet; Sie können sie jederzeit selbst löschen. **Hochgeladene Dateien** werden nicht dauerhaft gespeichert, sondern nach Sitzungsende automatisch gelöscht. Bitte verwenden Sie dennoch keine schutzbedürftigen Echtdaten für den Test der Anwendung. Nach Abschluss der Evaluierung wird das System zurückgesetzt und alle personenbezogenen Daten werden gelöscht.
+
+**Bei Fragen zur Evaluation** wenden Sie sich gerne an [kontakt@fghgsd.de](mailto:kontakt@fghgsd.de).
 
 ---
 
@@ -28,7 +30,6 @@ Im Chat **hochgeladene Dateien** werden nicht dauerhaft gespeichert, sondern nac
 Grundschutz-KI befindet sich in der Evaluierungsphase. Folgende Punkte sind uns bekannt und bewusst Gegenstand der Evaluierung — Ihr Feedback dazu ist besonders wertvoll:
 
 - **Quellenangaben passen nicht immer zur Aussage:** Das ist kein seltenes Randphänomen, sondern ein bekannter, häufigerer Schwachpunkt, den wir aktiv untersuchen. Typische Ursache: Das Modell zitiert dieselbe Fundstelle wiederholt für mehrere, auch inhaltlich unterschiedliche Aussagen weiter — als eine Art „Sammelquelle" —, obwohl sie nur einen Teil davon tatsächlich belegt. Das kommt insbesondere bei Antworten mit mehreren Aufzählungspunkten vor. Ein Blick auf die verlinkte PDF-Seite zeigt, ob die Fundstelle wirklich zur jeweiligen Einzelaussage passt.
-- **Suchtreffer:** Die Suche nach passenden Stellen im Kompendium erfolgt über eine semantische Ähnlichkeitssuche. Bei sehr spezifischen Fachbegriffen kann es vorkommen, dass die treffendste Stelle nicht gefunden wird und die Antwort dadurch ungenauer ausfällt.
 - **Sehr breite Aufzählungsfragen** (z. B. „Welche Anforderungen stellt Baustein X insgesamt?"): Hier tritt das Sammelquellen-Problem von oben besonders häufig auf, da viele Einzelanforderungen gleichzeitig abgedeckt werden sollen. Konkretere Teilfragen (z. B. zu einem einzelnen Aspekt) liefern erfahrungsgemäß zuverlässigere Ergebnisse als eine vollständige Auflistung in einer Antwort.
 
 **Wir sind hier konkret auf Ihre Mitarbeit angewiesen:** Diese Fehler automatisiert zu erkennen ist nur begrenzt möglich — am wertvollsten ist Ihre Rückmeldung, wenn Sie eine unpassende Fundstelle bemerken. Melden Sie das bitte über 👎 mit kurzem Kommentar, möglichst mit Angabe, **welcher konkrete Aufzählungspunkt bzw. welche Aussage** betroffen ist. Nur so lassen sich diese Fälle den jeweiligen Fragen zuordnen und gezielt nachvollziehen.
