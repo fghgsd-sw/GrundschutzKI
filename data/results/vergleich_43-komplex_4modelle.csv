@@ -1,0 +1,31 @@
+﻿Frage;gpt-oss-120b_context_precision;gpt-oss-120b_context_recall;gpt-oss-120b_faithfulness;gpt-oss-120b_answer_correctness;llama-3.3-70b_context_precision;llama-3.3-70b_context_recall;llama-3.3-70b_faithfulness;llama-3.3-70b_answer_correctness;mistral-24b_context_precision;mistral-24b_context_recall;mistral-24b_faithfulness;mistral-24b_answer_correctness;llama-3.1-8b_context_precision;llama-3.1-8b_context_recall;llama-3.1-8b_faithfulness;llama-3.1-8b_answer_correctness
+	Was ist bei der Auswahl der Planung von Software-Tests zu beachten?;0.8333;1.0;0.963;0.4039;1.0;1.0;1.0;0.6513;0.5148;1.0;1.0;0.5059;0.5;1.0;0.8;0.702
+Brauchen wir für jeden Cloud-Dienst separate Dokumente?;0.3313;0.375;0.5;0.4979;1.0;1.0;0.4;0.6666;0.4508;0.0833;1.0;0.493;0.8333;1.0;0.5;0.7316
+Wann müssen Berechtigungen entzogen werden?;0.9821;1.0;0.9;0.5261;1.0;1.0;0.6;0.3692;0.4039;1.0;0.5;0.4357;0.8556;1.0;1.0;0.3873
+Warum ist eine Dokumentation der Anforderungen notwendig?;0.5;0.5;1.0;0.1957;0.9167;1.0;1.0;0.4548;0.3213;1.0;0.7391;0.2314;0.0;1.0;0.4;0.7731
+Was sind die Basis-Anforderungen beim Einsatz von Windows Server?;0.5;0.6667;0.7778;0.4588;1.0;1.0;1.0;0.3249;0.0991;0.5;0.95;0.4247;0.6458;1.0;0.6667;0.4109
+Was sollten Management-Berichte zur Informationssicherheit enthalten?;1.0;0.5714;1.0;0.613;1.0;1.0;1.0;0.557;0.875;1.0;0.8571;0.3197;0.747;0.9167;0.875;0.8198
+Welche Aspekte muss unser Migrationskonzept zu einem anderen Cloud-Anbieter konkret abdecken?;0.8083;1.0;0.875;0.7978;1.0;1.0;1.0;0.6636;0.2278;1.0;1.0;0.6409;0.6488;1.0;0.8889;0.6955
+Welche Aufgaben hat der oder die Informationssicherheitsbeauftragte (ISB)?;0.9617;1.0;0.0;0.0782;1.0;1.0;1.0;0.6136;0.9617;1.0;1.0;0.5181;0.8135;0.2887;0.7;0.5745
+Welche Basis Anforderungen gibt es im  IT-Grundschutz in Bezug auf Telearbeit ?;1.0;0.4;0.0;0.0874;0.8972;1.0;0.6;0.4128;0.0711;0.6667;0.9091;0.3821;0.8583;0.6;0.25;0.6801
+Welche Basis-Anforderungen sind für den Start einer Cloud-Nutzung absolut notwendig?;0.5655;0.4286;0.75;0.3807;0.6393;1.0;1.0;0.5045;0.0767;0.4286;1.0;0.5017;0.6117;0.7778;0.75;0.5701
+Welche Einschränkungen bringt Virtual Secure Mode mit sich?;1.0;0.5;1.0;0.7122;0.7917;1.0;0.4286;0.4847;0.2449;0.5;0.5714;0.8151;0.8333;1.0;0.4444;0.5949
+Welche Gefährdungen entstehen bei fehlendem Compliance Management?;0.5556;1.0;1.0;0.2993;0.6746;1.0;0.6667;0.4422;0.1406;1.0;0.96;0.2549;0.7;1.0;0.0;0.695
+Welche Maßnahmen adressieren gleichzeitig organisatorische und menschliche Risiken der Telearbeit?;0.5;0.9286;0.4545;0.9298;1.0;1.0;1.0;0.5544;0.2199;1.0;1.0;0.4657;0.25;1.0;0.8571;0.6162
+Welche Nachweise sollten wir von Subunternehmern im Bereich Cloud-Dienstleistungen einfordern?;0.8333;1.0;0.0;0.0933;1.0;1.0;0.2857;0.7253;0.5975;1.0;0.8333;0.5003;0.7593;0.7143;0.4;0.5553
+Welche Prozesse dürfen grundsätzlich ausgelagert werden?;0.8095;1.0;0.1429;0.3746;1.0;1.0;1.0;0.648;0.365;1.0;1.0;0.4932;0.5556;1.0;0.3333;0.2838
+Welche Ressourcen und Kompetenzen brauche ich als ISB, um meine Aufgabe erfüllen zu können?;0.8774;1.0;0.8125;0.5696;1.0;1.0;1.0;0.5167;0.9094;1.0;0.9143;0.5855;0.5694;0.7763;0.0;0.4661
+Welche organisatorischen Risiken bestehen bei fehlender Geräteverwaltung?;0.6458;1.0;1.0;0.2306;1.0;1.0;1.0;0.1607;0.4673;0.7143;0.9091;0.1969;0.0;0.3636;0.0;0.5509
+Weshalb sind Passwortregeln erforderlich?;1.0;1.0;0.6;0.5203;1.0;1.0;1.0;0.4617;0.321;1.0;0.75;0.5357;0.4429;1.0;0.625;0.6752
+Wie dokumentiere ich Management-Entscheidungen und was muss dabei beachtet werden?;0.9151;0.7333;0.8125;0.3759;0.9151;1.0;1.0;0.4766;0.5251;0.8462;0.8;0.5495;0.7962;1.0;0.7778;0.645
+Wie fange ich überhaupt an? Was sind die ersten Schritte beim Aufbau eines ISMS?;0.8972;1.0;1.0;0.2616;0.9094;1.0;1.0;0.5007;0.7037;1.0;1.0;0.2803;1.0;1.0;0.0;0.6692
+Wie gehen wir bei der Cloud-Nutzung mit dem veränderten Administrationsmodell um?;0.9429;1.0;0.5833;0.4679;1.0;1.0;0.8333;0.4392;0.2087;1.0;0.7778;0.6388;0.8542;1.0;0.0;0.6947
+Wie implementiere ich eine hochverfügbare SAN-Lösung richtig?;0.7;0.5;0.2667;0.534;0.7329;1.0;0.8;0.6741;0.203;0.5;0.2667;0.405;0.7333;1.0;0.3846;0.2926
+Wie kann ein zentrales Identitätsmanagement organisatorische Risiken reduzieren?;1.0;1.0;0.0833;0.3629;1.0;1.0;1.0;0.4834;0.763;0.625;0.4;0.5199;1.0;0.5;0.0;0.7235
+Wie kann verhindert werden, dass rechtliche Anforderungen übersehen werden?;0.8333;1.0;0.4286;0.7315;1.0;1.0;1.0;0.608;0.2602;1.0;0.4286;0.3726;0.3667;1.0;0.44;0.4542
+Wie werden integrierte Fernwartungsfunktionen in IT-Systemen abgesichert?;0.9306;1.0;0.3;0.5791;1.0;1.0;1.0;0.4729;0.2796;1.0;0.9231;0.5657;0.8542;1.0;0.8889;0.5413
+Wie werden organisatorische und technische Maßnahmen in Bezug auf Telearbeit miteinander verzahnt?;0.6458;0.7692;0.4118;0.4177;0.9821;1.0;1.0;0.3755;0.0198;1.0;0.8462;0.3777;0.5;0.4;0.625;0.5736
+Wie wird mit institutionsfremden Personen organisatorisch umgegangen?;0.8542;1.0;0.0;0.1113;0.8552;1.0;1.0;0.5263;0.8608;0.4286;1.0;0.4646;0.3333;1.0;0.1429;0.8387
+Wie wird sichergestellt, dass Mitarbeitende IT-Sicherheitsregeln einhalten?;0.9583;0.6429;0.0;0.0931;1.0;1.0;1.0;0.3782;0.1703;1.0;1.0;0.424;0.0;1.0;0.6667;0.4909
+Wie wird verhindert, dass Mitarbeitende Sicherheitsmaßnahmen im Homeoffice vernachlässigen?;0.7862;1.0;0.3333;0.2916;1.0;1.0;1.0;0.4285;0.1666;0.9091;0.625;0.736;0.5;0.9167;0.5;0.3858
+Womit muss ich anfangen, wenn wir Cloud-Dienste nutzen wollen?;0.826;0.9;0.6667;0.5123;1.0;1.0;1.0;0.6114;0.3616;1.0;0.9167;0.5059;0.71;1.0;0.8125;0.3452
