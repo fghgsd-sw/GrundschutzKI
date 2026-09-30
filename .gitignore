@@ -202,3 +202,7 @@ qdrant_data/
 .cursorignore
 .cursorindexingignore
 .idea/
+
+# Lokales Test-Skript mit Klartext-Zugangstoken - niemals committen
+apps/chainlit/ionosCon.py
+apps/chainlit/.env.mc_models
